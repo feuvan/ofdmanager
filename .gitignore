@@ -1,0 +1,19 @@
+# Rust
+/target
+**/target
+
+# Node
+node_modules
+dist
+.vite
+
+# Tauri
+apps/desktop/src-tauri/gen
+
+# Bundled fallback fonts (Microsoft core fonts; fetched via scripts/fetch-fonts.sh,
+# not redistributed in-repo for size/licensing reasons)
+crates/ofd-core/assets/fonts/*.ttf
+crates/ofd-core/assets/fonts/*.TTF
+
+# OS
+.DS_Store

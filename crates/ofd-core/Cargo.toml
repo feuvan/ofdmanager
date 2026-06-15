@@ -1,0 +1,28 @@
+[package]
+name = "ofd-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Portable OFD (GB/T 33190-2016) parsing and rendering core. Bytes in, bitmap/model out."
+
+[dependencies]
+zip.workspace = true
+roxmltree.workspace = true
+ttf-parser.workspace = true
+fontdb.workspace = true
+rustybuzz.workspace = true
+tiny-skia.workspace = true
+image.workspace = true
+justbig2.workspace = true
+sm3.workspace = true
+sha2.workspace = true
+md-5.workspace = true
+digest.workspace = true
+base64.workspace = true
+thiserror.workspace = true
+log.workspace = true
+
+[features]
+default = []
+# native-only parallelism etc. would gate behind this; wasm builds leave it off.
+native = []

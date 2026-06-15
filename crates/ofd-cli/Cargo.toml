@@ -1,0 +1,10 @@
+[package]
+name = "ofd-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native CLI for ofd-core: render OFD pages to PNG for regression fixtures."
+
+[dependencies]
+ofd-core = { path = "../ofd-core", features = ["native"] }
+image.workspace = true
