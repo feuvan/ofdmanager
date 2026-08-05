@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/ofd-core",
     "crates/ofd-cli",
+    "apps/desktop/src-tauri",
 ]
 
 [workspace.package]
@@ -15,21 +16,22 @@ repository = "https://github.com/feuvan/ofdmanager"
 # Container / XML
 zip = { version = "2", default-features = false, features = ["deflate"] }
 roxmltree = "0.20"
+encoding_rs = "0.8"
 # Fonts & text
 ttf-parser = "0.24"
-fontdb = "0.21"
-rustybuzz = "0.18"
+fontdb = { version = "0.21", default-features = false, features = ["std"] }
 # Rasterizer
 tiny-skia = "0.11"
 # Images
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "bmp"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "bmp", "tiff"] }
+moxcms = "0.8"
 justbig2 = "0.2"
 # Crypto (signature digest verification — GM SM3 etc.)
 sm3 = "0.4"
+sha1 = "0.10"
 sha2 = "0.10"
 md-5 = "0.10"
 digest = "0.10"
 base64 = "0.22"
 # Errors / utils
 thiserror = "1"
-log = "0.4"

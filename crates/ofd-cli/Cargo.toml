@@ -6,5 +6,6 @@ license.workspace = true
 description = "Native CLI for ofd-core: render OFD pages to PNG for regression fixtures."
 
 [dependencies]
-ofd-core = { path = "../ofd-core", features = ["native"] }
+ofd-core = { path = "../ofd-core" }
 image.workspace = true
+fontdb = { workspace = true, features = ["fs", "memmap", "fontconfig"] }

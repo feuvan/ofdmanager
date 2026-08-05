@@ -4,12 +4,14 @@
 //! The struct and field layout mirrors the standard's `CT_*` complex types so
 //! the model is a faithful, self-documenting representation of the format. Some
 //! fields are parsed and carried even though the current renderer does not yet
-//! consume them (e.g. line cap/join, page bleed box, font weight) — they are
+//! consume them (e.g. page bleed box and font weight) — they are
 //! part of the standard and kept so the model stays complete.
 //!
 //! Coordinate values are in millimetres unless noted; OFD uses a top-left origin
 //! with +X right and +Y down. The parser ([`crate::parser`]) produces these
 //! types; the renderer ([`crate::render`]) consumes the subset it supports.
+
+use std::sync::Arc;
 
 use crate::geom::{Matrix, Point, Rect};
 
@@ -35,6 +37,10 @@ pub struct Document {
     pub pages: Vec<Page>,
     pub resources: Resources,
     pub outline: Vec<OutlineItem>,
+    /// `Document/Bookmarks` — named destinations referenced by `Goto/Bookmark`.
+    pub bookmarks: Vec<Bookmark>,
+    /// `Document/Actions` — document-level actions, event type `DO` (§14.1).
+    pub actions: Vec<Action>,
     pub metadata: Metadata,
     /// Electronic seal stamps (GB/T 38540), rendered as appearance only.
     pub seals: Vec<Seal>,
@@ -116,9 +122,35 @@ impl PageArea {
 pub struct Annotation {
     /// Object id of the page this annotation belongs to (matches [`Page::id`]).
     pub page_id: u64,
+    /// `Annot/@ID` — the annotation's document-wide object id.
+    pub id: u64,
     /// `Annot/@Type` — Stamp / Watermark / Link / Path / Highlight, etc.
     pub annot_type: String,
+    /// Required annotation provenance fields (`@Creator`, `@LastModDate`).
+    pub creator: String,
+    pub last_mod_date: String,
+    /// Optional producer-defined subtype.
+    pub subtype: Option<String>,
+    /// Annotation behavior flags from GB/T 33190 table 61.
+    pub visible: bool,
+    pub print: bool,
+    pub no_zoom: bool,
+    pub no_rotate: bool,
+    pub read_only: bool,
+    /// Human-readable annotation description and named parameters.
+    pub remark: Option<String>,
+    pub parameters: Vec<AnnotationParameter>,
+    /// `Appearance/@Boundary`, retained for hosts even though its origin is also
+    /// baked into the contained objects for the rasterizer.
+    pub appearance_boundary: Option<Rect>,
     pub objects: Vec<GraphicObject>,
+}
+
+/// One annotation `Parameters/Parameter` name/value pair.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnnotationParameter {
+    pub name: String,
+    pub value: String,
 }
 
 /// An electronic seal's visual appearance and placement. Crypto verification is
@@ -129,8 +161,12 @@ pub struct Seal {
     pub page_id: u64,
     /// Stamp box on that page, in mm.
     pub boundary: Rect,
+    /// `StampAnnot/@Clip` — clip box for the appearance, in the stamp's own
+    /// (boundary-relative) coordinates. Used for cross-page "骑缝" seals where
+    /// each page shows a different slice of one seal.
+    pub clip: Option<Rect>,
     /// The stamp face, extracted from the SES seal structure.
-    pub appearance: SealAppearance,
+    pub appearance: Arc<SealAppearance>,
 }
 
 /// The picture a SES seal carries (GB/T 38540 `SES_ESPictureInfo`).
@@ -161,6 +197,193 @@ pub struct OutlineItem {
     pub title: String,
     pub page_index: Option<usize>,
     pub children: Vec<OutlineItem>,
+    /// `OutlineElem/Actions` — actions run when this node is activated (§14).
+    pub actions: Vec<Action>,
+}
+
+/// A named document bookmark (`CT_Bookmark`, §7): a name plus a destination,
+/// referenced by name from a `Goto/Bookmark` action.
+#[derive(Debug, Clone)]
+pub struct Bookmark {
+    pub name: String,
+    pub dest: Option<Dest>,
+}
+
+/// An action (`CT_Action`, §14): an event-triggered interaction attached to a
+/// graphic object, page, outline node, or the document. Modeled in full for
+/// completeness and host use; the renderer itself does not act on actions.
+#[derive(Debug, Clone)]
+pub struct Action {
+    /// `@Event` — what triggers the action.
+    pub event: ActionEvent,
+    /// `Region` — the active area(s); when absent, the host object's or page's
+    /// bounding box is used (§14.1).
+    pub region: Option<Region>,
+    /// The behavior performed (exactly one per `CT_Action`).
+    pub kind: ActionKind,
+}
+
+/// `Action/@Event` (§14.1, 表52): the trigger condition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionEvent {
+    /// `DO` — document open.
+    DocumentOpen,
+    /// `PO` — page open.
+    PageOpen,
+    /// `CLICK` — click within the region.
+    Click,
+}
+
+/// The behavior of a [`Action`] (the `CT_Action` choice).
+#[derive(Debug, Clone)]
+pub enum ActionKind {
+    /// `Goto` — jump within this document (§14.2).
+    Goto(GotoTarget),
+    /// `URI` — open/visit a URI (§14.4).
+    Uri(UriAction),
+    /// `GotoA` — open a document attachment (§14.3).
+    GotoAttachment(GotoAttachment),
+    /// `Sound` — play an audio resource (§14.5).
+    Sound(SoundAction),
+    /// `Movie` — control a video resource (§14.6).
+    Movie(MovieAction),
+    /// An action element whose type is outside the standard set.
+    Other(String),
+}
+
+/// `Goto` target (§14.2): an explicit destination or a named bookmark.
+#[derive(Debug, Clone)]
+pub enum GotoTarget {
+    Dest(Dest),
+    /// `Bookmark/@Name` — references a document bookmark by name.
+    Bookmark(String),
+}
+
+/// A jump destination (`CT_Dest`, §14.2, 表54). Coordinates are in mm.
+#[derive(Debug, Clone)]
+pub struct Dest {
+    /// `@Type` — how the destination region is described.
+    pub kind: DestKind,
+    /// `@PageID` — the target page's object id.
+    pub page_id: u64,
+    /// `@Left` / `@Top` — top-left of the target region (defaults 0 when used).
+    pub left: Option<f32>,
+    pub top: Option<f32>,
+    /// `@Right` / `@Bottom` — bottom-right of the target region (`FitR`).
+    pub right: Option<f32>,
+    pub bottom: Option<f32>,
+    /// `@Zoom` — page zoom factor (0/absent = keep current).
+    pub zoom: Option<f32>,
+}
+
+/// `Dest/@Type` (§14.2, 表54).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DestKind {
+    /// `XYZ` — top-left position plus zoom.
+    Xyz,
+    /// `Fit` — fit the whole page in the window.
+    Fit,
+    /// `FitH` — fit page width; region given by `Top`.
+    FitH,
+    /// `FitV` — fit page height; region given by `Left`.
+    FitV,
+    /// `FitR` — fit the rectangle (`Left`,`Top`,`Right`,`Bottom`).
+    FitR,
+}
+
+/// `URI` action (§14.4).
+#[derive(Debug, Clone)]
+pub struct UriAction {
+    pub uri: String,
+    /// `@Base` — base URI for resolving a relative `URI`.
+    pub base: Option<String>,
+    /// `@Target` — where to open (not in GB/T 33190 body but in its XSD).
+    pub target: Option<String>,
+}
+
+/// `GotoA` attachment action (§14.3).
+#[derive(Debug, Clone)]
+pub struct GotoAttachment {
+    /// `@AttachID` — the attachment's id.
+    pub attach_id: String,
+    /// `@NewWindow` — open in a new window (default true).
+    pub new_window: bool,
+}
+
+/// `Sound` action (§14.5).
+#[derive(Debug, Clone)]
+pub struct SoundAction {
+    pub resource_id: u64,
+    /// `@Volume` — 0..=100 (default 100).
+    pub volume: Option<i32>,
+    /// `@Repeat` — loop playback (default false).
+    pub repeat: Option<bool>,
+    /// `@Synchronous` — wait for playback to finish (default false).
+    pub synchronous: Option<bool>,
+}
+
+/// `Movie` action (§14.6).
+#[derive(Debug, Clone)]
+pub struct MovieAction {
+    pub resource_id: u64,
+    pub operator: MovieOperator,
+}
+
+/// `Movie/@Operator` playback control (§14.6, 表59).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MovieOperator {
+    Play,
+    Stop,
+    Pause,
+    Resume,
+}
+
+/// An action trigger region (`CT_Region`, §14.1): one or more closed sub-areas,
+/// each an outline of explicit segments in the host object's coordinate space.
+#[derive(Debug, Clone)]
+pub struct Region {
+    pub areas: Vec<RegionArea>,
+}
+
+/// One sub-area of a [`Region`] (`CT_Region/Area`): a start point and a sequence
+/// of edge segments forming a closed outline.
+#[derive(Debug, Clone)]
+pub struct RegionArea {
+    /// `@Start` — the starting point of the area outline.
+    pub start: Point,
+    pub segments: Vec<RegionSegment>,
+}
+
+/// A single edge of a [`RegionArea`] (the `CT_Region/Area` choice).
+#[derive(Debug, Clone)]
+pub enum RegionSegment {
+    /// `Move` — move the current point.
+    Move(Point),
+    /// `Line` — line to a point.
+    Line(Point),
+    /// `QuadraticBezier` — quadratic curve via one control point.
+    QuadraticBezier { p1: Point, p2: Point },
+    /// `CubicBezier` — cubic curve; `p1`/`p2` optional per the XSD.
+    CubicBezier {
+        p1: Option<Point>,
+        p2: Option<Point>,
+        p3: Point,
+    },
+    /// `Arc` — elliptical arc (SVG-style endpoint parameterization).
+    Arc {
+        /// `@EllipseSize` — the (rx, ry) ellipse radii.
+        ellipse_size: (f32, f32),
+        /// `@RotationAngle` — ellipse x-axis rotation, degrees.
+        rotation_angle: f32,
+        /// `@LargeArc` — take the large arc sweep.
+        large_arc: bool,
+        /// `@SweepDirection` — true = clockwise.
+        sweep_clockwise: bool,
+        /// `@EndPoint` — the arc end point.
+        end: Point,
+    },
+    /// `Close` — close the outline back to the start.
+    Close,
 }
 
 /// A single page (`CT_Page` / `Page.xml`).
@@ -171,6 +394,9 @@ pub struct Page {
     /// Per-page area override; falls back to the document default.
     pub area: Option<PageArea>,
     pub layers: Vec<Layer>,
+    /// `Page/Actions` — actions associated with the page, event type `PO`
+    /// (page open) per §14.1. Carried for completeness, not rendered.
+    pub actions: Vec<Action>,
 }
 
 /// `Layer/@Type` — z-order band for a layer.
@@ -200,6 +426,24 @@ pub struct Resources {
     pub images: Vec<MultiMedia>,
     pub draw_params: Vec<DrawParam>,
     pub color_spaces: Vec<ColorSpace>,
+    /// Reusable vector graphics (`CT_VectorG` / `CompositeGraphicUnit`, §13),
+    /// referenced by a [`CompositeObject`]'s `@ResourceID`.
+    pub composite_graphic_units: Vec<CompositeGraphicUnit>,
+}
+
+/// A reusable vector graphic (`CT_VectorG` / `CompositeGraphicUnit`, §13): a
+/// self-contained group of graphic objects in its own coordinate space, declared
+/// `Width`×`Height`, drawn wherever a [`CompositeObject`] references it by
+/// `@ResourceID`. Handwritten ink signatures, logos, and reused vector art are
+/// commonly carried this way.
+#[derive(Debug, Clone)]
+pub struct CompositeGraphicUnit {
+    pub id: u64,
+    /// `@Width` / `@Height` — the unit's declared canvas size (mm).
+    pub width: f32,
+    pub height: f32,
+    /// The unit's `Content` graphic objects, in the unit's own coordinate space.
+    pub objects: Vec<GraphicObject>,
 }
 
 /// A font resource (`CT_Font`).
@@ -251,7 +495,9 @@ pub enum ImageFormat {
     Jpeg,
     Png,
     Bmp,
-    /// Scanned-document codecs not yet decoded; rendered as a placeholder.
+    Tiff,
+    /// JBIG2 is decoded; bare CCITT remains modeled but unsupported because an
+    /// OFD multimedia resource supplies no width/height/strip parameters.
     Jbig2,
     Ccitt,
     Unknown,
@@ -303,10 +549,21 @@ pub enum ColorSpaceKind {
 pub struct ColorSpace {
     pub id: u64,
     pub kind: ColorSpaceKind,
-    /// `@BitsPerComponent` — 1, 2, 4, 8 (default 8).
+    /// `@BitsPerComponent` — 1, 2, 4, 8, or 16 (default 8).
     pub bits_per_component: u8,
-    /// Indexed palette entries, if any (`Palette/CV`).
-    pub palette: Vec<Color>,
+    /// Indexed source-component entries, if any (`Palette/CV`). Values stay in
+    /// the declared color space so an ICC profile can be applied at render time.
+    pub palette: Vec<Vec<f32>>,
+    /// Optional `@Profile` ICC resource loaded from the package.
+    pub profile: Option<IccProfile>,
+}
+
+/// An ICC color profile referenced by `ColorSpace/@Profile`.
+#[derive(Debug, Clone)]
+pub struct IccProfile {
+    /// Resolved in-package location, retained for diagnostics and host tooling.
+    pub location: String,
+    pub data: Arc<Vec<u8>>,
 }
 
 /// A color expression as defined by `CT_Color`: either a basic color resolved
@@ -342,17 +599,12 @@ pub struct BasicColor {
     pub alpha: u8,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum GradientMapType {
+    #[default]
     Direct,
     Repeat,
     Reflect,
-}
-
-impl Default for GradientMapType {
-    fn default() -> Self {
-        GradientMapType::Direct
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -363,6 +615,8 @@ pub struct GradientSegment {
 
 #[derive(Debug, Clone)]
 pub struct AxialGradient {
+    /// Alpha inherited from the containing `CT_Color`.
+    pub alpha: u8,
     pub map_type: GradientMapType,
     pub map_unit: Option<f32>,
     pub extend: u8,
@@ -373,6 +627,8 @@ pub struct AxialGradient {
 
 #[derive(Debug, Clone)]
 pub struct RadialGradient {
+    /// Alpha inherited from the containing `CT_Color`.
+    pub alpha: u8,
     pub map_type: GradientMapType,
     pub map_unit: Option<f32>,
     pub eccentricity: f32,
@@ -395,6 +651,8 @@ pub struct GouraudPoint {
 
 #[derive(Debug, Clone)]
 pub struct GouraudGradient {
+    /// Alpha inherited from the containing `CT_Color`.
+    pub alpha: u8,
     pub extend: bool,
     pub points: Vec<GouraudPoint>,
     pub back_color: Option<BasicColor>,
@@ -402,6 +660,8 @@ pub struct GouraudGradient {
 
 #[derive(Debug, Clone)]
 pub struct LatticeGouraudGradient {
+    /// Alpha inherited from the containing `CT_Color`.
+    pub alpha: u8,
     pub vertices_per_row: usize,
     pub extend: bool,
     pub points: Vec<GouraudPoint>,
@@ -411,6 +671,8 @@ pub struct LatticeGouraudGradient {
 /// OFD pattern color (`CT_Pattern`): a page block cell tiled across the target.
 #[derive(Debug, Clone)]
 pub struct PatternColor {
+    /// Alpha inherited from the containing `CT_Color`.
+    pub alpha: u8,
     pub width: f32,
     pub height: f32,
     pub x_step: f32,
@@ -436,8 +698,8 @@ pub enum PatternRelativeTo {
     Page,
 }
 
-/// An RGBA color, 8 bits per channel. Color values from any OFD color space are
-/// resolved to RGBA at parse time.
+/// An RGBA color, 8 bits per channel. Basic OFD colors retain their color-space
+/// representation in [`BasicColor`] and are resolved to this type at render time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Color {
     pub r: u8,
@@ -473,17 +735,23 @@ pub struct GraphicCommon {
     pub ctm: Matrix,
     /// `@DrawParam` — referenced style block id.
     pub draw_param: Option<u64>,
-    /// `@LineWidth` (mm).
-    pub line_width: f32,
-    pub cap: LineCap,
-    pub join: LineJoin,
+    /// Object-local stroke properties. `None` means inherit the referenced
+    /// DrawParam (or the containing layer's DrawParam), then use the standard
+    /// default. Keeping absence explicit is required because object-local values
+    /// override DrawParam values, including when they equal the default.
+    pub line_width: Option<f32>,
+    pub cap: Option<LineCap>,
+    pub join: Option<LineJoin>,
     pub miter_limit: Option<f32>,
     pub dash_offset: Option<f32>,
     pub dash_pattern: Option<Vec<f32>>,
     /// `@Alpha` — 0..=255 object opacity.
     pub alpha: u8,
-    /// `Clips/Clip` — drawing is restricted to the intersection of these areas.
-    pub clip: Vec<ClipArea>,
+    /// `Clips/Clip` — Areas within a Clip are unioned; Clips are intersected.
+    pub clips: Vec<Clip>,
+    /// `Actions/Action` — event-triggered interactions on this object (§8.5,
+    /// §14). Carried for completeness; the renderer does not act on them.
+    pub actions: Vec<Action>,
 }
 
 impl Default for GraphicCommon {
@@ -495,24 +763,44 @@ impl Default for GraphicCommon {
             visible: true,
             ctm: Matrix::IDENTITY,
             draw_param: None,
-            line_width: 0.353, // ~1px at 72dpi in mm; overridden by document
-            cap: LineCap::Butt,
-            join: LineJoin::Miter,
+            line_width: None,
+            cap: None,
+            join: None,
             miter_limit: None,
             dash_offset: None,
             dash_pattern: None,
             alpha: 255,
-            clip: Vec::new(),
+            clips: Vec::new(),
+            actions: Vec::new(),
         }
     }
 }
 
-/// A single clip region (`Clip/Area`): a path plus an optional `Area/@CTM` that
-/// further transforms it within the object's coordinate space (§8.4).
+/// One `Clip` in `Clips` (§8.4). Its Areas form a union; multiple Clip values on
+/// a graphic object form an intersection.
+#[derive(Debug, Clone)]
+pub struct Clip {
+    pub areas: Vec<ClipArea>,
+}
+
+/// A single clip region (`Clip/Area`, §8.4): a graphics path **or** a text shape,
+/// plus an optional `Area/@CTM` that further transforms it within the object's
+/// coordinate space, and an optional `@DrawParam` whose stroke characteristics
+/// can affect the clip edge.
 #[derive(Debug, Clone)]
 pub struct ClipArea {
     pub ctm: Matrix,
-    pub commands: Vec<PathCommand>,
+    /// `Area/@DrawParam` — referenced style affecting the clip outline.
+    pub draw_param: Option<u64>,
+    pub shape: ClipShape,
+}
+
+/// What a clip [`ClipArea`] is shaped by (§8.4): a path (`Area/Path`, §9.1) or a
+/// text object whose glyph outlines form the clip (`Area/Text`, §11.2).
+#[derive(Debug, Clone)]
+pub enum ClipShape {
+    Path(Box<PathObject>),
+    Text(Box<TextObject>),
 }
 
 /// A drawable object within a layer.
@@ -523,6 +811,19 @@ pub enum GraphicObject {
     Image(ImageObject),
     /// A `PageBlock` / composite grouping (templates, seal appearances).
     Group(Vec<GraphicObject>),
+    /// A `CompositeObject` (`CT_Composite`, §13) referencing a reusable
+    /// [`CompositeGraphicUnit`] by `@ResourceID`.
+    Composite(CompositeObject),
+}
+
+/// Composite object (`CT_Composite` / `CompositeObject`, §13): places a
+/// [`CompositeGraphicUnit`] (named by `@ResourceID`) into a layer or annotation,
+/// transformed by the object's boundary and CTM like any other graphic object.
+#[derive(Debug, Clone)]
+pub struct CompositeObject {
+    pub common: GraphicCommon,
+    /// `@ResourceID` — the [`CompositeGraphicUnit`] to draw.
+    pub resource_id: u64,
 }
 
 /// Text reading direction (`@ReadDirection`, degrees: 0/90/180/270).
@@ -661,5 +962,7 @@ pub struct ImageBorder {
     pub line_width: f32,
     pub horizontal_corner_radius: f32,
     pub vertical_corner_radius: f32,
+    pub dash_offset: f32,
+    pub dash_pattern: Option<Vec<f32>>,
     pub color: Option<OfdColor>,
 }

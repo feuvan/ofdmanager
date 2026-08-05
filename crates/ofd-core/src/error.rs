@@ -28,6 +28,14 @@ pub enum OfdError {
     #[error("malformed document: {0}")]
     Malformed(String),
 
+    /// A configured safety limit was exceeded while parsing or rendering.
+    #[error("resource limit exceeded: {0}")]
+    ResourceLimit(String),
+
+    /// A resource required for faithful rendering was missing or unusable.
+    #[error("render error: {0}")]
+    Render(String),
+
     /// Generic I/O failure.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

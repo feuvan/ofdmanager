@@ -1,0 +1,22 @@
+[package]
+name = "ofd-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cross-platform OFD Manager desktop application."
+
+[lib]
+name = "ofd_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.3", features = [] }
+
+[dependencies]
+ofd-core = { path = "../../../crates/ofd-core" }
+fontdb = { workspace = true, features = ["fs", "memmap", "fontconfig"] }
+image.workspace = true
+printpdf = { version = "0.12.5", default-features = false, features = ["jpeg"] }
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2.11.5", features = [] }
+tauri-plugin-dialog = "2.7.2"

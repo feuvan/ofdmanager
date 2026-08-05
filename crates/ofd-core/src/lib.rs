@@ -33,3 +33,8 @@ pub use render::Bitmap;
 pub fn open(bytes: Vec<u8>) -> Result<OfdPackage> {
     parser::parse(bytes)
 }
+
+/// Parse an OFD package with caller-selected ZIP resource limits.
+pub fn open_with_limits(bytes: Vec<u8>, limits: container::ContainerLimits) -> Result<OfdPackage> {
+    parser::parse_with_limits(bytes, limits)
+}

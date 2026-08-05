@@ -6,6 +6,12 @@
 node_modules
 dist
 .vite
+*.tsbuildinfo
+
+# Local configuration
+.env
+.env.*
+!.env.example
 
 # Tauri
 apps/desktop/src-tauri/gen
@@ -17,3 +23,6 @@ crates/ofd-core/assets/fonts/*.TTF
 
 # OS
 .DS_Store
+
+# Local QA and analysis artifacts
+/tmp/

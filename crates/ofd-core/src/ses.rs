@@ -79,9 +79,13 @@ fn read_tlv(input: &[u8]) -> Option<(Tlv<'_>, &[u8])> {
 
 /// Parse all TLVs directly contained in `content`.
 fn children(content: &[u8]) -> Vec<Tlv<'_>> {
+    const MAX_CHILDREN: usize = 4096;
     let mut out = Vec::new();
     let mut rest = content;
-    while let Some((tlv, next)) = read_tlv(rest) {
+    while out.len() < MAX_CHILDREN {
+        let Some((tlv, next)) = read_tlv(rest) else {
+            break;
+        };
         out.push(tlv);
         if next.len() == rest.len() {
             break; // no progress, avoid loop
@@ -121,17 +125,32 @@ pub fn extract_seal_picture(der: &[u8]) -> Option<SealPicture> {
 
 /// Depth-first search for the `SES_ESealInfo` and its picture.
 fn find_in(content: &[u8]) -> Option<SealPicture> {
-    for tlv in children(content) {
-        if !tlv.is_constructed() {
-            continue;
-        }
-        if tlv.tag == SEQUENCE {
-            if let Some(pic) = picture_from_eseal_info(&tlv) {
-                return Some(pic);
+    const MAX_DEPTH: usize = 64;
+    const MAX_NODES: usize = 1_000_000;
+
+    let mut stack = vec![(content, 0usize)];
+    let mut visited = 0usize;
+    while let Some((level, depth)) = stack.pop() {
+        let mut rest = level;
+        while let Some((tlv, next)) = read_tlv(rest) {
+            visited += 1;
+            if visited > MAX_NODES {
+                return None;
             }
-        }
-        if let Some(pic) = find_in(tlv.content) {
-            return Some(pic);
+            if tlv.is_constructed() {
+                if tlv.tag == SEQUENCE {
+                    if let Some(pic) = picture_from_eseal_info(&tlv) {
+                        return Some(pic);
+                    }
+                }
+                if depth < MAX_DEPTH {
+                    stack.push((tlv.content, depth + 1));
+                }
+            }
+            if next.len() == rest.len() {
+                break;
+            }
+            rest = next;
         }
     }
     None
@@ -150,7 +169,11 @@ fn picture_from_eseal_info(node: &Tlv) -> Option<SealPicture> {
         return None;
     }
     let hfields = children(header.content);
-    if hfields.first().map(|t| is_string(t.tag)) != Some(true) {
+    if hfields.len() < 3
+        || !is_string(hfields[0].tag)
+        || hfields[1].tag != INTEGER
+        || !is_string(hfields[2].tag)
+    {
         return None;
     }
     // The picture is field index 3 by the standard; fall back to the first
@@ -251,5 +274,13 @@ mod tests {
     fn ignores_unrelated_der() {
         let der = seq(&[int(1), oct(b"hello"), ia5("world")]);
         assert!(extract_seal_picture(&der).is_none());
+    }
+
+    #[test]
+    fn rejects_picture_shape_with_an_incomplete_ses_header() {
+        let incomplete_header = seq(&[ia5("ES")]);
+        let picture = seq(&[ia5("png"), oct(b"PNGDATA"), int(30), int(20)]);
+        let lookalike = seq(&[incomplete_header, ia5("esid"), seq(&[int(1)]), picture]);
+        assert!(extract_seal_picture(&lookalike).is_none());
     }
 }

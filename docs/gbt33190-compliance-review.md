@@ -2,375 +2,297 @@
 
 Source standard: `docs/33190-2016-gbt-cd-300.pdf`.
 
-Review date: 2026-06-15.
+Review date: 2026-07-29.
 
-Scope: current Rust core (`crates/ofd-core`) and CLI (`crates/ofd-cli`). This is
-a code review against the standard, not a formal conformance certification. The
-current implementation is best described as a practical parser/renderer for a
-useful OFD subset, not a complete GB/T 33190 implementation.
+Scope: the Rust core (`crates/ofd-core`) and CLI (`crates/ofd-cli`). This is a
+code review against the standard, not a formal conformance certification.
 
 ## Executive Summary
 
-Current status: **partially compliant for core fixed-layout rendering**.
+Current status: **strong support for static fixed-layout parsing and rendering,
+with partial document-management and interactive-feature compliance**.
 
-Strong coverage:
+The core now covers the difficult static appearance path used by real invoices,
+certificates, annotations, and electronic seals:
 
-- ZIP container ingestion, `OFD.xml`, `Document.xml`, resource files, page files.
-- Core page rendering pipeline: page/object coordinate spaces, layers, page
-  blocks, path/text/image objects, basic colors, alpha, path clipping, embedded
-  fonts, image decoding, static annotation appearances, and seal appearances.
-- Signature metadata parsing and protected-file digest checking.
-- Golden-image regression tests over fixture OFDs.
+- bounded ZIP/XML parsing with observable malformed-resource diagnostics;
+- page, layer, object, resource, annotation, signature, outline, bookmark, and
+  action models;
+- paths, text, images, clipping, colors, patterns, gradients, composite vector
+  resources, and raster/vector seal appearances;
+- embedded-first font resolution, including bare and sfnt-wrapped CID-keyed CFF;
+- signature protected-file digest verification; and
+- golden-image regression over all checked-in fixtures, using strict rendering
+  for warning-free inputs and an exact warning allowlist for malformed samples.
 
-Largest gaps:
+The largest remaining conformance gaps are:
 
-- No full Schema/XSD validation and no strict enforcement of required fields,
-  namespace URI, ID uniqueness, path case-sensitivity, or many default/error
-  rules.
-- Many chapter-7 document structures are ignored: permissions, actions,
-  view preferences, bookmarks, outlines, custom tags, extensions, versions, and
-  attachments.
-- Several rendering semantics are incomplete: object-boundary clipping, line
-  cap/join/dash/miter rendering, color spaces/palettes/indexed colors/profiles,
-  pattern and gradient colors, text clipping, image masks/borders/substitution,
-  text direction/HScale/style transforms, path arcs, and XML region paths.
-- No interactive action model, no video/audio playback, no composite object
-  resources, and no cryptographic signature authenticity verification.
+- no XSD validation or complete enforcement of namespace, cardinality, required
+  values, ID uniqueness, and strict `ST_Loc` case rules;
+- `PageRes`, template `ZOrder`/area fallback, permissions, and view preferences;
+- image masks/borders, CCITT/TIFF, and ICC/profile-aware color conversion;
+- annotation flags and host-side execution of actions/audio/video;
+- custom tags, extensions, versions, and attachments; and
+- cryptographic signature authenticity/certificate validation and SHA-1 digest
+  verification.
 
 ## Status Legend
 
-- **OK**: implemented closely enough for the reviewed requirement.
-- **Partial**: relevant support exists, but notable required behavior is missing.
+- **OK**: implemented closely enough for the reviewed static requirement.
+- **Partial**: useful support exists, but required behavior remains.
 - **No**: not implemented.
-- **N/A**: terminology or scope text with no direct runtime requirement.
+- **N/A**: no direct runtime requirement.
+
+## Safety and Portability Baseline
+
+Untrusted documents are processed under finite defaults:
+
+- ZIP archive, entry count, per-entry size, total uncompressed size, and
+  declared/streamed compression ratio are bounded by `ContainerLimits`.
+- XML entries, per-tree and package-wide DOM nodes, package graphic/model items,
+  nesting depth, source text, delta/path expansion, `CGTransform` glyph slots,
+  and repeated template-model expansion are bounded before or during model
+  construction.
+- Page surfaces, individual decoded images and their peak conversion working
+  set, the decoded-image cache, JBIG2 structures/work, cumulative glyph/path/mask
+  work, composite and pattern nesting/offscreen surfaces, Gouraud raster work,
+  and recursive embedded-OFD seals are bounded by `RenderLimits`.
+- SES ASN.1 traversal is iterative and bounded by depth and node count.
+- Strict rendering reports missing or unusable fonts, images, and composite
+  resources, rejects unimplemented image masks/borders, and propagates nested
+  embedded-OFD seal warnings instead of silently accepting incomplete output.
+
+`ofd-core` remains bytes-in/model-and-bitmap-out. It performs no file-system,
+network, thread, or system-font discovery. The native CLI loads only the needed
+font bytes and injects them into the core. The core's `fontdb` dependency enables
+only `std`, not `fs`, `memmap`, or `fontconfig`.
+
+Evidence: `container.rs`, `parser.rs`, `render.rs`, `ses.rs`, `fonts.rs`, and
+`crates/ofd-cli/src/main.rs`.
 
 ## Chapter-by-Chapter Matrix
 
 | Chapter | Standard area | Status | Notes |
 | --- | --- | --- | --- |
-| 1 | Scope | Partial | The project targets parsing, rendering, and signature digest checks, but not the whole storage/reading/exchange/management surface. |
-| 2 | Normative references | Partial | XML is parsed with `roxmltree`; XML bytes are converted with `String::from_utf8`, so non-UTF-8 GB18030 XML is not supported. |
-| 3 | Terms and definitions | N/A | No runtime requirement. |
-| 4 | Abbreviations | N/A | No runtime requirement. |
-| 5 | Overview and imaging model | Partial | The core has a container -> model -> raster pipeline and renders text/path/image objects. Complex color, interactions, and some object semantics are missing. |
-| 6 | File structure | Partial | Reads OFD as ZIP and requires `OFD.xml`; does not validate ZIP 6.2.0 conformance or exact package organization. `read_normalized` tolerates leading slash and case differences, which is useful but not strict ST_Loc behavior. |
-| 7 | Basic structure | Partial | Main document/page/resource subsets are parsed. Many optional-but-standard structures are ignored, and required-field/schema validation is mostly absent. Details below. |
-| 8 | Page description | Partial | Coordinate spaces and CTM are implemented. Draw params, colors, clipping, and graphic-unit semantics are incomplete. Details below. |
-| 9 | Graphics | Partial | Basic abbreviated paths `M/L/Q/B/C` and fill rules are supported. `S`, `A`, XML region path descriptions, some defaults, and stroke styles are missing. |
-| 10 | Images | Partial | JPEG/PNG/BMP/JBIG2 render. Substitution, masks, borders, TIFF/CCITT, and color-profile behavior are not rendered. |
-| 11 | Text | Partial | Embedded/substituted fonts, glyph outlines, TextCode, DeltaX/Y, and basic CGTransform are implemented. HScale, read/char direction, weight/italic transforms, full CGTransform cases, TextCode escape rules, and some defaults are incomplete. |
-| 12 | Video | No | Video resources may be parsed as multimedia metadata, but Movie actions/playback are absent. |
-| 13 | Composite objects | No | PageBlock grouping exists, but `CompositeObject` and `CompositeGraphicUnit` resources are not parsed/rendered. |
-| 14 | Actions | No | Document/page/object/outline actions, destinations, URI, attachment, sound, and movie actions are not modeled. |
-| 15 | Annotations | Partial | Annotation list/files and static appearances are rendered. Annotation flags, metadata, interaction, parameters, link behavior, and visibility semantics are incomplete. |
-| 16 | Custom tags | No | `CustomTags` entry and files are ignored. |
-| 17 | Extensions | No | `Extensions` entry and extension data are ignored. |
-| 18 | Digital signatures | Partial | Signature list/files and reference digests are parsed; digest integrity verification exists. No SignedValue authenticity, certificate validation, SHA1, or full stamp clipping. Some relative-path handling is likely incomplete. |
-| 19 | Versions | No | `Versions` and version file lists are ignored. |
-| 20 | Attachments | No | Attachment lists and attachment metadata/content are ignored. |
-| Appendix A | Normative Schema | Partial | The implementation mirrors parts of the schema in Rust structs, but does not run XSD validation or enforce all schema cardinalities/defaults. |
+| 1 | Scope | Partial | Parsing, static rendering, navigation metadata, and digest checking are covered; the full exchange/management surface is not. |
+| 2 | Normative references | Partial | Namespaced XML is parsed structurally, but input is currently required to be UTF-8; GB18030 XML is not decoded. |
+| 3 | Terms and definitions | N/A | No direct runtime requirement. |
+| 4 | Abbreviations | N/A | No direct runtime requirement. |
+| 5 | Overview and imaging model | Partial | The container-to-model-to-raster pipeline covers the main imaging model; interactive and management features remain host work. |
+| 6 | File structure | Partial | ZIP ingestion and relative `ST_Loc` resolution work with safety limits. Exact schema/package validation and strict case-sensitive lookup are absent. |
+| 7 | Basic structure | Partial | Core document/page/resource structures, outlines, bookmarks, and actions are modeled. Several management structures remain absent. |
+| 8 | Page description | Partial | Boundary clipping, DrawParam precedence/inheritance, object alpha, clips, colors, and stroke styles render. Exact device-pixel line-width rules and profile colors remain. |
+| 9 | Graphics | Partial | `S/M/L/Q/B/A/C`, fill rules, arc conversion, patterns, and gradients render. Some complex-paint behavior is approximate. |
+| 10 | Images | Partial | JPEG/PNG/BMP/JBIG2, alpha, downsampling, and substitution render. Masks, borders, CCITT/TIFF, and profiles remain. |
+| 11 | Text | Partial | Embedded fonts, CFF/CID handling, escapes, X/Y inheritance, directions, HScale, italic, glyph-slot deltas, and full span cardinalities are handled. Per-character coverage fallback is absent. |
+| 12 | Video | Partial | Multimedia metadata and Movie actions are modeled; playback is intentionally a host/UI concern and is not implemented. |
+| 13 | Composite objects | OK | `CompositeObject` and `CompositeGraphicUnit` parse/render with size clipping, alpha, inherited DrawParam, cycle detection, and nesting limits. |
+| 14 | Actions | Partial | DO/PO/CLICK, Region, Goto, URI, GotoA, Sound, Movie, Dest, bookmarks, and outline actions are modeled; the core does not execute them. |
+| 15 | Annotations | Partial | Static appearances render; annotation flags, metadata, parameters, and interaction semantics remain incomplete. |
+| 16 | Custom tags | No | `CustomTags` and custom-tag files are not modeled. |
+| 17 | Extensions | No | `Extensions` and extension data are not modeled. |
+| 18 | Digital signatures | Partial | Signature metadata, relative locations, protected-file digests, seal extraction, vector/raster appearances, and stamp clipping work. Authenticity and SHA-1 remain. |
+| 19 | Versions | No | Version descriptions and version file lists are not modeled. |
+| 20 | Attachments | No | Attachment lists, metadata, and content access are not modeled. |
+| Appendix A | Normative Schema | Partial | Rust types mirror much of the schema, including XSD boolean lexical forms, but full schema validation is not performed. |
 
 ## Detailed Findings
 
-### Chapter 6 - File Structure
-
-The container abstraction is a ZIP reader over injected bytes, matching the
-standard's container model at a high level (`Container::open`,
-`Container::read`). It also normalizes leading `/` and performs a case-insensitive
-fallback when entry lookup fails.
-
-Compliance risks:
-
-- ST_Loc paths are specified as case-sensitive; the fallback in
-  `Container::read_normalized` is permissive rather than strictly conforming.
-- The code does not validate "one and only one `OFD.xml`", ZIP version, or
-  recommended directory names.
-
-Evidence: `crates/ofd-core/src/container.rs:15`, `:26`, `:38`.
-
-### Chapter 7 - Basic Structure
+### Chapters 6-7: Container and Document Structure
 
 Implemented:
 
-- `OFD/@Version`, `OFD/@DocType`, multiple `DocBody` entries, `DocInfo`,
-  `DocRoot`, and `Signatures`.
-- `CommonData` subset: `MaxUnitID`, `PageArea`, `PublicRes`, `DocumentRes`,
-  `TemplatePage`, `DefaultCS`.
-- `Pages/Page`, page `Area`, page `Content/Layer`, `Layer/@Type`,
-  `Layer/@DrawParam`, `PageBlock`, `TextObject`, `PathObject`, `ImageObject`.
-- Resource files for fonts, multimedia, draw params, and color spaces.
+- Bounded ZIP ingestion and normalized relative path resolution, including
+  resolving resource `BaseLoc` against its containing resource-description file.
+- `OFD.xml`, multiple `DocBody` values, `DocInfo`, `Document.xml`, CommonData,
+  page areas, resources, templates, pages, layers, and page blocks.
+- Fonts, multimedia, DrawParams, color spaces/palettes, and composite graphic
+  units.
+- Document/page/object actions, bookmarks, and recursive outlines with page
+  destination resolution.
+- Structured warnings for missing resources, invalid embedded fonts, unresolved
+  references, and DrawParam/composite cycles.
 
-Compliance risks:
+Remaining:
 
-- Namespace is matched only by local element name, so documents with wrong or
-  missing namespace URI can be accepted.
-- XML is assumed UTF-8; GB18030-encoded XML is not decoded.
-- No schema validation for required fields, enum domains, ID uniqueness, positive
-  `ST_Box` width/height, or unresolved references.
-- `DocInfo` is only partially modeled. Missing fields include `Abstract`,
-  `ModDate`, `DocUsage`, `Cover`, `Keywords`, and custom metadata.
-- Document-level `Permissions`, `Actions`, `VPreferences`, `Bookmarks`,
-  `Outlines`, `CustomTags`, `Extensions`, and `Attachments` are ignored.
-- `outline` exists in the model but is always returned empty.
-- Page `PageRes` is ignored.
-- Template page `ZOrder` and template `Area` fallback are not implemented; parsed
-  template layers are simply prepended before page layers.
-- `CompositeObject` is not parsed.
-- Resource `CompositeGraphicUnits` are not parsed.
-- Color spaces are stored but mostly not used for color resolution; palettes and
-  profiles are not parsed.
+- Namespace URI, required field, enum, cardinality, ID uniqueness, and positive
+  box validation are incomplete.
+- `read_normalized` deliberately accepts leading slash and case-insensitive
+  fallback, which is useful for real-world files but is more permissive than
+  strict `ST_Loc` semantics.
+- `DocInfo` is partial; permissions and view preferences are not modeled.
+- Page-specific `PageRes` is ignored.
+- Template `ZOrder` and template area fallback are not implemented; referenced
+  template layers are currently added beneath page content.
+- Custom tags, extensions, versions, and attachments are absent.
 
-Evidence: `crates/ofd-core/src/parser.rs:18`, `:44`, `:56`, `:67`, `:92`,
-`:111`, `:131`, `:154`, `:393`, `:410`, `:458`, `:637`;
-`crates/ofd-core/src/model.rs:26`, `:146`, `:158`, `:196`;
-`crates/ofd-core/src/parser.rs:805`.
+Evidence: `container.rs`, `parser.rs`, and `model.rs`.
 
-### Chapter 8 - Page Description
+### Chapters 8-9: Page Description and Graphics
 
 Implemented:
 
-- Page space uses millimetres and top-left origin.
-- Object placement combines page origin, object boundary, and object CTM.
-- Layer paint order is grouped by Background, Body, Foreground, then Custom.
-- DrawParam inheritance through `Relative` is implemented for selected fields.
-- Basic RGB/gray/CMYK-like value parsing and alpha are implemented.
-- Path-based clipping exists.
-- Object `Visible=false` is honored.
+- Top-left millimetre coordinates, page-origin handling, object Boundary/CTM,
+  visibility, alpha, and layer ordering.
+- Automatic Boundary clipping for every graphic unit.
+- Object attributes override the object's DrawParam; otherwise the layer
+  DrawParam and its `Relative` chain supply values before standard defaults.
+- Line width, cap, join, miter limit, dash offset, and dash pattern for both path
+  and text strokes.
+- Clip path and text shapes. Areas inside one Clip are unioned; multiple Clips
+  are intersected. Clip geometry follows the owning object's transform.
+- RGB/Gray/CMYK component scaling, `DefaultCS`, explicit ColorSpace, indexed
+  palettes, color/object alpha, pattern cells, axial/radial gradients, and
+  Gouraud/lattice shading.
+- Abbreviated path operators `S`, `M`, `L`, `Q`, `B`, `A`, and `C`; elliptical
+  arcs are converted to cubic Beziers.
+- A stroked path with no resolvable fill color remains outline-only, avoiding the
+  common anti-tamper-mark black-fill failure.
 
-Compliance risks:
+Remaining:
 
-- Object `Boundary` is not used as an automatic clipping rectangle for text/path
-  objects, although the standard says drawing outside the boundary is clipped.
-- Stroke `Cap`, `Join`, `MiterLimit`, `DashOffset`, and `DashPattern` are parsed
-  but not rendered. `tiny_skia::Stroke` is created mostly with defaults.
-- Text stroke does not resolve `DrawParam` line width.
-- Line-width special handling in the standard (0 = one device pixel, positive
-  very small widths at least two pixels) is not implemented as specified.
-- Color resolution ignores `ColorSpace`, `Index`, palettes, profiles, BPC scaling,
-  and hexadecimal `#` values.
-- Pattern, axial/radial/Gouraud/mesh gradient colors are not modeled.
-- Clip semantics are incomplete: text clips are unsupported; `Area` entries are
-  flattened and intersected, while the standard requires union within one `Clip`
-  and intersection between multiple `Clip` objects.
-- Clip `DrawParam` is ignored.
-- Graphic-unit actions are ignored.
+- OFD's exact zero-width/minimum-device-pixel stroke rules are approximated by a
+  small positive raster width.
+- ICC/profile-aware color conversion is absent.
+- Complex paint behavior is implemented for the practical static subset but is
+  not backed by a complete conformance fixture set for every mapping/extend case.
 
-Evidence: `crates/ofd-core/src/geom.rs:1`, `:41`;
-`crates/ofd-core/src/render.rs:64`, `:99`, `:143`, `:162`, `:190`, `:296`;
-`crates/ofd-core/src/parser.rs:476`, `:521`, `:707`, `:830`;
-`crates/ofd-core/src/render.rs:427`, `:497`.
+Evidence: `parser.rs`, `model.rs`, and `render.rs`.
 
-### Chapter 9 - Graphics
+### Chapter 10: Images
 
 Implemented:
 
-- Path objects with `Stroke`, `Fill`, `Rule`, `FillColor`, `StrokeColor`.
-- Abbreviated path operators `M`, `L`, `Q`, `B`, `C`.
-- NonZero and EvenOdd fill rules.
+- JPEG, PNG, BMP, and JBIG2 decoding under dimension/allocation limits.
+- Object alpha and automatic Boundary/clip masks.
+- `Substitution` is used when the primary resource is unavailable.
+- Large source images are resized to their device footprint before drawing.
+- Missing and failed resources become strict-mode errors.
 
-Compliance risks:
+Remaining:
 
-- Abbreviated operators `S` (subpath start) and `A` (arc) are not implemented.
-- XML path/region descriptions (`Area`, `Move`, `Line`, `QuadraticBezier`,
-  `CubicBezier`, `Arc`, `Close`) are not parsed.
-- FillColor default for paths should be transparent; the renderer currently fills
-  a fill-only path without a resolved fill color as black.
-- Stroke cap/join/dash/miter styles are parsed but ignored at render time.
+- `ImageMask` is parsed and reference-checked but not applied.
+- Border fields are parsed but borders are not painted.
+- CCITT/TIFF and embedded color profiles are not supported.
 
-Evidence: `crates/ofd-core/src/parser.rs:585`, `:762`;
-`crates/ofd-core/src/model.rs:454`, `:478`;
-`crates/ofd-core/src/render.rs:296`, `:446`.
+Evidence: `parser.rs` and `render.rs`.
 
-### Chapter 10 - Images
+### Chapter 11: Text
 
 Implemented:
 
-- Image objects parse `ResourceID`, `Substitution`, `ImageMask`, and `Border`.
-- Multimedia resources parse type, format, and media file.
-- Renderer decodes JPEG, PNG, BMP, and JBIG2; large images are pre-resized before
-  drawing.
+- Embedded-first font resolution; invalid embedded fonts emit warnings.
+- Bare CFF wrapping and CID-to-GID charset mapping for both bare and already
+  sfnt-wrapped CID-keyed CFF fonts.
+- Declared-family lookup, aliases, deterministic/host-injected fallback fonts,
+  and protection against applying producer glyph IDs to an unrelated substitute.
+- `TextCode` formatting-whitespace removal, backslash-plus-four-hex-digit
+  escapes, X/Y inheritance,
+  and bounded `g N V` delta expansion.
+- Explicit per-displayed-glyph positioning, last-delta repetition, horizontal
+  metric fallback only when both axes omit deltas, and vertical-axis behavior.
+- `CGTransform` one-to-one, one-to-many, many-to-one, and many-to-many spans with
+  preserved `.notdef` slots, `GlyphCount` alignment, and spans crossing
+  `TextCode` run boundaries.
+- HScale, ReadDirection, CharDirection, italic shear, fill/stroke paints, and
+  complete stroke styles.
+- Text glyph outlines can form real clip masks.
 
-Compliance risks:
+Remaining:
 
-- `Substitution` and `ImageMask` are parsed but not used.
-- Image borders and border dash/color/corner radii are parsed only partially and
-  not rendered.
-- TIFF/CCITT images are not decoded.
-- No color profile handling.
+- A substitute face is selected per declared font, not per character. If that
+  face lacks a character, the renderer leaves its slot undrawn rather than
+  searching another fallback or painting tofu.
+- `Weight` is retained as a font-selection hint and is not synthesized into
+  artificial bold outlines.
 
-Evidence: `crates/ofd-core/src/parser.rs:601`, `:685`, `:746`;
-`crates/ofd-core/src/render.rs:337`, `:512`.
+Evidence: `fonts.rs`, `cff.rs`, `parser.rs`, `render.rs`, `bare_cff.rs`, and
+`tests/text_clip.rs`.
 
-### Chapter 11 - Text
+### Chapters 12-14: Media, Composite Objects, and Actions
 
-Implemented:
+Composite vector resources are fully part of the static render model. Their
+content is clipped by the unit dimensions and the referencing object's Boundary
+and Clips, rendered through the composite CTM, and then composited using the
+object alpha. DrawParam inheritance, missing references, cycles, nesting depth,
+and intermediate surface allocation are handled explicitly.
 
-- Font resources parse `FontName`, `FamilyName`, `Charset`, `Serif`, `Bold`,
-  `Italic`, `FixedWidth`, and `FontFile`.
-- Embedded font resolution is preferred, including wrapped bare CFF support.
-- Text objects parse `Font`, `Size`, `Stroke`, `Fill`, `HScale`,
-  `ReadDirection`, `CharDirection`, `Weight`, `Italic`, colors, `CGTransform`,
-  and `TextCode`.
-- Renderer outlines glyphs and uses explicit `DeltaX`/`DeltaY`, with
-  `CGTransform` fallback for subset fonts.
+Actions are data, not page paint. The parser retains all standard event and
+behavior forms, including explicit Region segment geometry and destinations.
+Executing navigation, opening a URI/attachment, or playing audio/video belongs
+to a desktop/mobile/web host that does not yet exist.
 
-Compliance risks:
+Evidence: `model.rs`, `parser.rs`, `render.rs`, and `tests/actions.rs`.
 
-- `HScale`, `ReadDirection`, `CharDirection`, `Weight`, and `Italic` are parsed
-  but not applied during rendering.
-- TextCode omitted `X`/`Y` should inherit the previous TextCode coordinate; the
-  parser currently defaults missing coordinates to 0.
-- Text escape handling for `\` plus four hex digits is not implemented.
-- Full CGTransform semantics are incomplete: one-to-many, many-to-one,
-  many-to-many, and `GlyphCount` are not fully modeled.
-- Text `StrokeColor` default should be transparent; when `Stroke=true`, the
-  renderer falls back to black.
-- The renderer falls back to font horizontal advance when DeltaX/DeltaY are both
-  empty; this may be desirable for real-world files but should be reconciled with
-  the standard text that absent DeltaX/DeltaY means no offset on that axis.
+### Chapter 15: Annotations
 
-Evidence: `crates/ofd-core/src/parser.rs:538`, `:550`, `:567`;
-`crates/ofd-core/src/fonts.rs:87`, `:107`, `:133`;
-`crates/ofd-core/src/cff.rs:1`;
-`crates/ofd-core/src/render.rs:206`, `:219`, `:472`;
-`crates/ofd-core/src/model.rs:396`, `:430`, `:441`.
+Annotation list/files and static appearance objects are parsed and painted over
+page content. Remaining work includes annotation `Visible`, `Print`, `NoZoom`,
+`NoRotate`, `ReadOnly`, creator/date/remark metadata, parameters, and link/host
+interaction semantics.
 
-### Chapters 12-14 - Video, Composite Objects, Actions
+Evidence: `parser.rs` and `render.rs`.
 
-Video:
-
-- Multimedia resources can be classified as Audio/Video, but there is no action
-  model or playback surface.
-
-Composite objects:
-
-- `PageBlock` grouping is implemented, but standard `CompositeObject` nodes and
-  `CompositeGraphicUnit` resources are absent.
-
-Actions:
-
-- No support for `DO`, `PO`, or `CLICK` events.
-- No support for `Goto`, `URI`, `GotoA`, `Sound`, or `Movie`.
-- No `Dest`, bookmark target, or region action handling.
-
-Evidence: `crates/ofd-core/src/model.rs:230`, `:386`;
-`crates/ofd-core/src/parser.rs:458`, `:685`.
-
-### Chapter 15 - Annotations
+### Chapter 18: Digital Signatures
 
 Implemented:
 
-- `Annotations` entry is parsed from `Document.xml`.
-- Annotation list pages and per-page annotation files are followed.
-- `Annot/@Type` and static `Appearance` page blocks are parsed and drawn over
-  page content.
+- Signature lists/descriptions, `Seal` versus `Sign`, provider, method, time,
+  protected references, and signed-value location.
+- Relative `BaseLoc`, `Seal/BaseLoc`, and `SignedValue` path resolution.
+- MD5, SM3, and SHA-256 protected-file digest checking.
+- Structured SES picture extraction and raster or embedded-OFD seal rendering.
+- Required SES header-shape validation before accepting a seal picture.
+- The CLI fails verification when signature metadata could not be parsed; a
+  broken signature list is not reported as an unsigned document.
 
-Compliance risks:
+Remaining:
 
-- Annotation metadata and flags are ignored: `ID`, `Creator`, `LastModDate`,
-  `Subtype`, `Visible`, `Print`, `NoZoom`, `NoRotate`, `ReadOnly`, `Remark`, and
-  `Parameters`.
-- Link annotations are not interactive; only static appearance can render.
-- Annotation `Visible=false` is not honored at the annotation level.
-- No print/nozoom/norotate behavior.
+- The actual signature value and certificate chain are not authenticated.
+- SHA-1 `CheckMethod` is not implemented.
+- Full GB/T 38540 cryptographic validation is out of scope for the current SES
+  appearance decoder.
 
-Evidence: `crates/ofd-core/src/parser.rs:154`, `:205`;
-`crates/ofd-core/src/render.rs:113`.
-
-### Chapters 16-17 - Custom Tags and Extensions
-
-No implementation was found for `CustomTags`, custom tag files, `Extensions`, or
-extension data.
-
-Evidence: no parser/model symbols beyond a metadata comment; `rg` found no
-functional parsing for these structures.
-
-### Chapter 18 - Digital Signatures
-
-Implemented:
-
-- `Signatures.xml` and `Signature.xml` are parsed.
-- `Seal` vs `Sign` type is modeled.
-- Provider name, signature method, signature time, references, check values, and
-  signed value path are modeled.
-- Protected file digests can be verified using MD5, SM3, and SHA-256.
-- Seal appearances can be rendered from SES picture data when extractable.
-
-Compliance risks:
-
-- The actual `SignedValue` cryptographic signature is not verified; no SM2/CMS
-  verification or certificate-chain validation.
-- Appendix schema lists MD5/SHA1 for `CheckMethod`; SHA1 is not supported.
-- `StampAnnot/@Clip` is ignored.
-- `Signature.xml` path handling appears not to resolve relative paths against the
-  `Signatures.xml` directory, which ST_Loc normally requires for relative paths.
-- Seal parsing relies on GB/T 38540/GM/T 0031 structures, but that standard is not
-  present under `docs/` for this review.
-
-Evidence: `crates/ofd-core/src/parser.rs:147`, `:283`;
-`crates/ofd-core/src/sign.rs:1`, `:62`, `:107`;
-`crates/ofd-core/src/ses.rs:1`;
-`crates/ofd-cli/src/main.rs:25`, `:67`.
-
-### Chapters 19-20 - Versions and Attachments
-
-No implementation was found for:
-
-- `Versions` entries in `OFD.xml`.
-- `DocVersion` files and version file lists.
-- `Attachments` entry in `Document.xml`.
-- Attachment metadata or embedded attachment file access.
-
-Evidence: `crates/ofd-core/src/parser.rs:25` only reads `DocInfo`, `DocRoot`,
-and `Signatures` from each `DocBody`; `crates/ofd-core/src/parser.rs:67` does
-not read `Attachments`, and no attachment/version model exists.
+Evidence: `parser.rs`, `ses.rs`, `sign.rs`, and `crates/ofd-cli/src/main.rs`.
 
 ## Test and Verification Coverage
 
-Existing tests provide useful regression coverage but do not prove standard
-conformance:
+The current verification baseline includes:
 
-- Fixture smoke rendering and perceptual golden comparison at 96 DPI.
-- Parser unit tests for abbreviated path basics, relative path joining, deltas,
-  rectangles, and floats.
-- Rendering unit tests for `Visible=false`.
-- Signature unit tests for SM3 and method resolution.
-- SES unit tests for structural picture extraction.
-- Bare CFF unit test.
+- `cargo test --workspace`: 101 core unit tests, action/CFF/text-clip integration
+  tests, golden regression, and doc tests.
+- Golden rendering at exactly 96 DPI across 15 fixtures and 38 pages, with 30
+  perceptual comparisons. Dimensions may differ from a golden by at most one
+  pixel per axis.
+- Exact parse-warning and nested strict-render diagnostic allowlists for every
+  fixture. Warning-free inputs render in strict mode; explicitly allowlisted
+  malformed samples exercise bounded best-effort rendering, matching the CLI
+  contract that `--strict` rejects incomplete or malformed output.
+- Focused tests for ZIP/streamed-ratio limits, resource-relative paths, XML
+  booleans, delta/glyph cardinality, cross-run glyph spans, arcs, action regions,
+  Boundary/clip semantics, DrawParam precedence, image alpha, composite
+  alpha/cycles, strict missing resources, page/package/model/work limits, image
+  conversion peak memory, font trust, missing cmap slots, shared/validated seal
+  appearances, signature parse failures, substitution references, and CID CFF
+  mapping.
+- `cargo test -p ofd-core --no-default-features`, all-feature workspace checking,
+  warning-free Clippy, formatting, and Rustdoc builds.
 
-Gaps in tests mirror many implementation gaps: no conformance fixtures for
-gradients, pattern colors, palette/indexed colors, page resources, outlines,
-actions, attachments, versions, path arcs, XML region paths, image masks,
-annotation flags, template ZOrder, object boundary clipping, or full text
-direction/CGTransform behavior.
+Tests demonstrate regression coverage, not formal standard certification. The
+largest fixture gaps follow the remaining implementation gaps: PageRes,
+template ZOrder/area fallback, image masks/borders/CCITT, annotation flags,
+custom tags/extensions, versions, attachments, and signature authenticity.
 
-Evidence: `crates/ofd-core/tests/render_fixtures.rs:74`;
-`crates/ofd-core/src/parser.rs:937`;
-`crates/ofd-core/src/render.rs:608`;
-`crates/ofd-core/src/sign.rs:150`;
-`crates/ofd-core/src/ses.rs:162`;
-`crates/ofd-core/tests/bare_cff.rs`.
+## Recommended Next Work
 
-## Recommended Implementation Order
-
-1. Add a strict/conformance mode separate from permissive real-world parsing:
-   namespace checks, required fields, ID/reference validation, ST_Loc rules,
-   schema cardinalities, and structured warnings/errors.
-2. Fix visible rendering deviations in the core subset:
-   object-boundary clipping, path FillColor default, text StrokeColor default,
-   line cap/join/dash/miter rendering, PageRes, template ZOrder, template area
-   fallback, relative signature paths, and annotation visibility.
-3. Complete text semantics:
-   HScale, ReadDirection, CharDirection, X/Y inheritance, text escapes, style
-   transforms, and full CGTransform cases.
-4. Complete image and path primitives:
-   image masks, borders, substitution, TIFF/CCITT, path `S`/`A`, and XML region
-   paths.
-5. Implement standard color machinery:
-   ColorSpace/Index/palette/profile/BPC, patterns, and gradients.
-6. Add structural features:
-   outlines/bookmarks, actions, attachments, versions, custom tags, extensions,
-   composite objects, video/audio metadata and host-facing hooks.
-7. Add full signature authenticity verification behind an optional feature,
-   preserving the current lightweight digest check.
-
+1. Add a separate conformance-validation layer for namespace, required values,
+   cardinalities, IDs/references, box validity, and strict case-sensitive paths.
+2. Implement PageRes and complete template ZOrder/area behavior.
+3. Render ImageMask and Border, then add CCITT/TIFF and profile-aware colors.
+4. Model and enforce annotation flags and metadata in host-facing APIs.
+5. Add attachments, versions, custom tags, extensions, permissions, and view
+   preferences.
+6. Add SHA-1 digest support and optional signature/certificate authenticity
+   verification.
+7. Build host shells that execute navigation, URI, attachment, audio, and video
+   actions while keeping `ofd-core` pure.
