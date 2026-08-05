@@ -34,7 +34,9 @@ The accompanying `*-N.png` files are local golden renderings generated for
 this project's regression tests, not upstream files.
 
 Several fixtures contain invoice-like or other realistic document data,
-including identifiers, amounts, signatures, and embedded images. They remain
-in this private repository. Do not redistribute the fixtures or the golden
-renderings without reviewing the upstream project's terms and the rights in
-the document contents.
+including identifiers, amounts, signatures, and embedded images. This
+repository is public because these inputs come from the public upstream test
+resources linked above. The upstream code license does not necessarily settle
+the rights for every embedded document or image, so preserve this attribution
+and review the relevant upstream terms before redistributing or replacing
+fixtures and golden renderings.
