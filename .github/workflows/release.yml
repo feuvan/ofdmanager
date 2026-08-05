@@ -16,7 +16,6 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
 
 jobs:
@@ -30,7 +29,7 @@ jobs:
     steps:
       - name: Create draft release
         id: release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
@@ -100,13 +99,13 @@ jobs:
         run: scripts/fetch-fonts.sh
 
       - name: Build and upload
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: apps/desktop
           releaseId: ${{ needs.create-release.outputs.release_id }}
-          includeUpdaterJson: false
+          uploadUpdaterJson: false
           uploadPlainBinary: true
           args: ${{ matrix.args }}
 
