@@ -820,9 +820,9 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("failed to build OFD Manager");
 
-    app.run(|app, event| {
+    app.run(|_app, _event| {
         #[cfg(target_os = "macos")]
-        if let tauri::RunEvent::Opened { urls } = event {
+        if let tauri::RunEvent::Opened { urls } = _event {
             if let Some(path) = urls
                 .iter()
                 .filter_map(|url| url.to_file_path().ok())
@@ -832,10 +832,10 @@ pub fn run() {
                         .is_some_and(|extension| extension.eq_ignore_ascii_case("ofd"))
                 })
             {
-                if let Ok(mut launch_path) = app.state::<AppState>().launch_path.lock() {
+                if let Ok(mut launch_path) = _app.state::<AppState>().launch_path.lock() {
                     *launch_path = Some(path.clone());
                 }
-                let _ = app.emit("open-document-request", path.to_string_lossy().into_owned());
+                let _ = _app.emit("open-document-request", path.to_string_lossy().into_owned());
             }
         }
     });
