@@ -56,7 +56,7 @@ export function EmptyState() {
           选择文件
         </Button>
         <p className="mt-3 text-[11px] text-muted-foreground">
-          或将 .ofd 文件拖放到窗口中
+          或将一个或多个 .ofd 文件拖放到窗口中
         </p>
 
         <div className="mt-9 flex flex-wrap justify-center gap-x-5 gap-y-2 text-[11px] text-muted-foreground">

@@ -1,3 +1,4 @@
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -67,6 +68,12 @@ export interface ExportProgress {
   total: number;
 }
 
+export interface BatchExportProgress {
+  current: number;
+  total: number;
+  fileName: string;
+}
+
 export interface ExportResult {
   path: string;
   pageCount: number;
@@ -125,10 +132,26 @@ export async function exportDocumentPdf(path: string, dpi = 200) {
   return invoke<ExportResult>("export_pdf", { path, dpi });
 }
 
+export async function exportBatchDocumentPdf(paths: string[], dpi = 200) {
+  return invoke<ExportResult[]>("export_batch_pdf", { paths, dpi });
+}
+
+export async function revealExportedFile(path: string) {
+  return revealItemInDir(path);
+}
+
 export async function listenForExportProgress(
   onProgress: (progress: ExportProgress) => void,
 ) {
   return listen<ExportProgress>("export-progress", (event) => {
+    onProgress(event.payload);
+  });
+}
+
+export async function listenForBatchExportProgress(
+  onProgress: (progress: BatchExportProgress) => void,
+) {
+  return listen<BatchExportProgress>("batch-export-progress", (event) => {
     onProgress(event.payload);
   });
 }

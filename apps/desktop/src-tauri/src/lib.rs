@@ -28,6 +28,7 @@ const MAX_FALLBACK_FONT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_EXPORT_PIXELS: f64 = 50_000_000.0;
 const MIN_EXPORT_DPI: f32 = 96.0;
 const MAX_EXPORT_DPI: f32 = 300.0;
+const MAX_BATCH_EXPORT_FILES: usize = 128;
 const MAX_RENDER_CACHE_BYTES: usize = 64 * 1024 * 1024;
 const MM_PER_INCH: f32 = ofd_core::geom::MM_PER_INCH;
 
@@ -157,6 +158,14 @@ struct SignatureReportDto {
 struct ExportProgress {
     current: usize,
     total: usize,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchExportProgress {
+    current: usize,
+    total: usize,
+    file_name: String,
 }
 
 #[derive(Serialize)]
@@ -370,6 +379,73 @@ async fn export_pdf(
     })
     .await
     .map_err(|error| format!("PDF export task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn export_batch_pdf(
+    paths: Vec<String>,
+    dpi: f32,
+    app: tauri::AppHandle,
+) -> Result<Vec<ExportResult>, String> {
+    if !dpi.is_finite() || !(MIN_EXPORT_DPI..=MAX_EXPORT_DPI).contains(&dpi) {
+        return Err(format!(
+            "export DPI must be between {MIN_EXPORT_DPI} and {MAX_EXPORT_DPI}"
+        ));
+    }
+    if paths.is_empty() {
+        return Err("no OFD files were provided for batch export".to_string());
+    }
+    if paths.len() > MAX_BATCH_EXPORT_FILES {
+        return Err(format!(
+            "batch export supports at most {MAX_BATCH_EXPORT_FILES} files"
+        ));
+    }
+
+    let total = paths.len();
+    let resource_dir = app.path().resource_dir().ok();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut results = Vec::with_capacity(total);
+        for (index, path) in paths.into_iter().enumerate() {
+            let input = PathBuf::from(path);
+            let file_name = input
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "document.ofd".to_string());
+            if !input
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("ofd"))
+            {
+                return Err(format!("not an OFD file: {}", input.display()));
+            }
+
+            let _ = app.emit(
+                "batch-export-progress",
+                BatchExportProgress {
+                    current: index,
+                    total,
+                    file_name: file_name.clone(),
+                },
+            );
+            let loaded = load_document(input, resource_dir.clone())
+                .map_err(|error| format!("cannot load {file_name}: {error}"))?;
+            let output = batch_pdf_path(&loaded.file_path);
+            let result = export_loaded_pdf(Arc::new(loaded), output, dpi, |_| {})
+                .map_err(|error| format!("cannot export {file_name}: {error}"))?;
+            let _ = app.emit(
+                "batch-export-progress",
+                BatchExportProgress {
+                    current: index + 1,
+                    total,
+                    file_name,
+                },
+            );
+            results.push(result);
+        }
+        Ok(results)
+    })
+    .await
+    .map_err(|error| format!("batch PDF export task failed: {error}"))?
 }
 
 fn load_document(path: PathBuf, resource_dir: Option<PathBuf>) -> Result<LoadedDocument, String> {
@@ -652,6 +728,14 @@ fn constrained_export_dpi(document: &ofd_core::Document, requested: f32) -> Resu
     Ok((constrained as f32).floor())
 }
 
+fn batch_pdf_path(input: &Path) -> PathBuf {
+    let stem = input
+        .file_stem()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_else(|| std::borrow::Cow::Borrowed("document"));
+    input.with_file_name(format!("{stem}.pdf"))
+}
+
 fn normalized_pdf_path(mut path: PathBuf) -> PathBuf {
     if !path
         .extension()
@@ -808,6 +892,7 @@ fn push_fallback_font(fonts: &mut Vec<Arc<Vec<u8>>>, total: &mut u64, data: Vec<
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
             open_document,
@@ -815,7 +900,8 @@ pub fn run() {
             close_document,
             render_page,
             verify_document,
-            export_pdf
+            export_pdf,
+            export_batch_pdf
         ])
         .build(tauri::generate_context!())
         .expect("failed to build OFD Manager");
@@ -854,6 +940,14 @@ mod tests {
         assert_eq!(
             normalized_pdf_path(PathBuf::from("/tmp/invoice.PDF")),
             PathBuf::from("/tmp/invoice.PDF")
+        );
+    }
+
+    #[test]
+    fn batch_pdf_path_uses_the_source_stem() {
+        assert_eq!(
+            batch_pdf_path(Path::new("/tmp/invoice.OFD")),
+            PathBuf::from("/tmp/invoice.pdf")
         );
     }
 

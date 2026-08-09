@@ -3,6 +3,7 @@ import {
   CheckCircle2,
   CircleAlert,
   FileDown,
+  FolderOpen,
   LoaderCircle,
   X,
 } from "lucide-react";
@@ -17,9 +18,11 @@ import { ViewerToolbar } from "@/components/viewer/viewer-toolbar";
 import { Button } from "@/components/ui/button";
 import {
   isTauriRuntime,
+  listenForBatchExportProgress,
   listenForExportProgress,
   listenForFileDrop,
   listenForOpenDocumentRequest,
+  revealExportedFile,
 } from "@/lib/tauri";
 import { formatFileSize } from "@/lib/utils";
 import { useTauriListener } from "@/hooks/use-tauri-listener";
@@ -33,9 +36,19 @@ export default function App() {
   const exporting = useViewerStore((state) => state.exporting);
   const exportProgress = useViewerStore((state) => state.exportProgress);
   const exportResult = useViewerStore((state) => state.exportResult);
+  const batchExporting = useViewerStore((state) => state.batchExporting);
+  const batchExportProgress = useViewerStore(
+    (state) => state.batchExportProgress,
+  );
+  const batchExportResults = useViewerStore(
+    (state) => state.batchExportResults,
+  );
   const error = useViewerStore((state) => state.error);
   const clearExportResult = useViewerStore(
     (state) => state.clearExportResult,
+  );
+  const clearBatchExportResults = useViewerStore(
+    (state) => state.clearBatchExportResults,
   );
   const clearError = useViewerStore((state) => state.clearError);
   const setError = useViewerStore((state) => state.setError);
@@ -64,33 +77,32 @@ export default function App() {
     tauriRuntime,
   );
   useTauriListener(
+    listenForBatchExportProgress,
+    (progress) => useViewerStore.getState().setBatchExportProgress(progress),
+    setError,
+    tauriRuntime,
+  );
+  useTauriListener(
     listenForFileDrop,
-    (paths) => {
-      const path = paths.find((candidate) =>
-        candidate.toLocaleLowerCase().endsWith(".ofd"),
-      );
-      if (path) {
-        void useViewerStore.getState().openPath(path);
-      }
-    },
+    (paths) => void useViewerStore.getState().handleDroppedFiles(paths),
     setError,
     tauriRuntime,
   );
 
   useEffect(() => {
-    if (!exporting) {
+    if (!exporting && !batchExporting) {
       return;
     }
     const frame = requestAnimationFrame(() => exportDialogRef.current?.focus());
     return () => cancelAnimationFrame(frame);
-  }, [exporting]);
+  }, [exporting, batchExporting]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const state = useViewerStore.getState();
       const command = event.metaKey || event.ctrlKey;
 
-      if (state.exporting) {
+      if (state.exporting || state.batchExporting) {
         event.preventDefault();
         return;
       }
@@ -170,7 +182,7 @@ export default function App() {
           </div>
         )}
 
-        {exporting && (
+        {(exporting || batchExporting) && (
           <div
             ref={exportDialogRef}
             role="dialog"
@@ -187,43 +199,69 @@ export default function App() {
                 </div>
                 <div className="min-w-0 flex-1">
                   <p id="export-dialog-title" className="text-sm font-semibold">
-                    正在导出 PDF
+                    {batchExporting ? "正在批量转换 PDF" : "正在导出 PDF"}
                   </p>
                   <p
                     id="export-dialog-description"
                     className="mt-1 text-xs text-muted-foreground"
                   >
-                    逐页渲染高质量图像，请勿关闭窗口。
+                    {batchExporting
+                      ? "正在逐个转换拖入的 OFD 文件，请勿关闭窗口。"
+                      : "逐页渲染高质量图像，请勿关闭窗口。"}
                   </p>
                 </div>
               </div>
               <div className="mt-5 h-2 overflow-hidden rounded-full bg-muted">
                 <div
                   role="progressbar"
-                  aria-label="PDF 导出进度"
+                  aria-label={
+                    batchExporting ? "批量转换进度" : "PDF 导出进度"
+                  }
                   aria-valuemin={0}
-                  aria-valuemax={Math.max(1, exportProgress?.total ?? 0)}
-                  aria-valuenow={exportProgress?.current ?? 0}
+                  aria-valuemax={
+                    batchExporting
+                      ? Math.max(1, batchExportProgress?.total ?? 0)
+                      : Math.max(1, exportProgress?.total ?? 0)
+                  }
+                  aria-valuenow={
+                    batchExporting
+                      ? batchExportProgress?.current ?? 0
+                      : exportProgress?.current ?? 0
+                  }
                   className="h-full rounded-full bg-primary transition-[width] duration-300"
                   style={{
                     width: `${
-                      exportProgress && exportProgress.total > 0
-                        ? (exportProgress.current / exportProgress.total) * 100
-                        : 4
+                      batchExporting
+                        ? batchExportProgress && batchExportProgress.total > 0
+                          ? (batchExportProgress.current /
+                              batchExportProgress.total) *
+                            100
+                          : 4
+                        : exportProgress && exportProgress.total > 0
+                          ? (exportProgress.current / exportProgress.total) * 100
+                          : 4
                     }%`,
                   }}
                 />
               </div>
-              <div className="mt-2 flex justify-between text-[11px] text-muted-foreground tabular-nums">
-                <span>
-                  {exportProgress?.current
-                    ? `已处理第 ${exportProgress.current} 页`
-                    : "正在准备文档"}
+              <div className="mt-2 flex justify-between gap-3 text-[11px] text-muted-foreground tabular-nums">
+                <span className="min-w-0 truncate">
+                  {batchExporting
+                    ? batchExportProgress?.fileName
+                      ? `正在转换 ${batchExportProgress.fileName}`
+                      : "正在准备批量转换"
+                    : exportProgress?.current
+                      ? `已处理第 ${exportProgress.current} 页`
+                      : "正在准备文档"}
                 </span>
-                <span>
-                  {exportProgress?.total
-                    ? `${exportProgress.current} / ${exportProgress.total}`
-                    : ""}
+                <span className="shrink-0">
+                  {batchExporting
+                    ? batchExportProgress?.total
+                      ? `${batchExportProgress.current} / ${batchExportProgress.total}`
+                      : ""
+                    : exportProgress?.total
+                      ? `${exportProgress.current} / ${exportProgress.total}`
+                      : ""}
                 </span>
               </div>
             </div>
@@ -268,10 +306,59 @@ export default function App() {
               </p>
             </div>
             <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                void revealExportedFile(exportResult.path).catch(setError)
+              }
+            >
+              <FolderOpen />
+              定位文件
+            </Button>
+            <Button
               variant="ghost"
               size="icon-sm"
               onClick={clearExportResult}
               aria-label="关闭导出提示"
+              className="-mt-1 -mr-2"
+            >
+              <X />
+            </Button>
+          </div>
+        )}
+        {batchExportResults && (
+          <div className="absolute right-5 bottom-5 z-50 flex w-[360px] items-start gap-3 rounded-xl border border-emerald-200 bg-background px-4 py-3.5 shadow-2xl">
+            <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-emerald-600" />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold">批量转换完成</p>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {batchExportResults.length} 个 OFD 文件已转换为 PDF
+              </p>
+              {batchExportResults[0] && (
+                <p className="mt-1 truncate text-[10px] text-muted-foreground">
+                  {batchExportResults[0].path}
+                </p>
+              )}
+            </div>
+            {batchExportResults[0] && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  void revealExportedFile(batchExportResults[0].path).catch(
+                    setError,
+                  )
+                }
+              >
+                <FolderOpen />
+                定位文件
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={clearBatchExportResults}
+              aria-label="关闭批量转换提示"
               className="-mt-1 -mr-2"
             >
               <X />

@@ -18,6 +18,7 @@ export function DocumentHeader() {
   const sidebarOpen = useViewerStore((state) => state.sidebarOpen);
   const inspectorOpen = useViewerStore((state) => state.inspectorOpen);
   const exporting = useViewerStore((state) => state.exporting);
+  const batchExporting = useViewerStore((state) => state.batchExporting);
   const openSelectedDocument = useViewerStore(
     (state) => state.openSelectedDocument,
   );
@@ -42,6 +43,7 @@ export function DocumentHeader() {
           variant="outline"
           size="sm"
           onClick={() => void openSelectedDocument()}
+          disabled={exporting || batchExporting}
           className="bg-background/60"
         >
           <FolderOpen />
@@ -50,10 +52,10 @@ export function DocumentHeader() {
         <Button
           size="sm"
           onClick={() => void exportCurrentPdf()}
-          disabled={!document || exporting}
+          disabled={!document || exporting || batchExporting}
         >
           <FileDown />
-          {exporting ? "导出中" : "导出 PDF"}
+          {exporting || batchExporting ? "导出中" : "导出 PDF"}
         </Button>
       </div>
 

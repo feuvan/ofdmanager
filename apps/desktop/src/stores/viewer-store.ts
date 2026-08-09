@@ -4,9 +4,11 @@ import {
   closeDocument as closeDocumentCommand,
   chooseDocument,
   choosePdfDestination,
+  exportBatchDocumentPdf,
   exportDocumentPdf,
   openDocument,
   openLaunchDocument,
+  type BatchExportProgress,
   type DocumentSummary,
   type ExportProgress,
   type ExportResult,
@@ -40,6 +42,9 @@ interface ViewerState {
   exporting: boolean;
   exportProgress: ExportProgress | null;
   exportResult: ExportResult | null;
+  batchExporting: boolean;
+  batchExportProgress: BatchExportProgress | null;
+  batchExportResults: ExportResult[] | null;
   error: string | null;
   initialize: () => Promise<void>;
   openPath: (path: string) => Promise<void>;
@@ -57,8 +62,12 @@ interface ViewerState {
   toggleInspector: () => void;
   verify: () => Promise<void>;
   exportPdf: (path: string) => Promise<void>;
+  exportBatchPdf: (paths: string[]) => Promise<void>;
   setExportProgress: (progress: ExportProgress) => void;
+  setBatchExportProgress: (progress: BatchExportProgress) => void;
   clearExportResult: () => void;
+  clearBatchExportResults: () => void;
+  handleDroppedFiles: (paths: string[]) => Promise<void>;
   openSelectedDocument: () => Promise<void>;
   exportCurrentPdf: () => Promise<void>;
   setError: (error: unknown) => void;
@@ -67,6 +76,12 @@ interface ViewerState {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function ofdPaths(paths: string[]) {
+  return [...new Set(paths)].filter((path) =>
+    path.toLocaleLowerCase().endsWith(".ofd"),
+  );
 }
 
 let operationGeneration = 0;
@@ -86,7 +101,26 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
   exporting: false,
   exportProgress: null,
   exportResult: null,
+  batchExporting: false,
+  batchExportProgress: null,
+  batchExportResults: null,
   error: null,
+
+  handleDroppedFiles: async (paths) => {
+    const droppedPaths = ofdPaths(paths);
+    if (
+      droppedPaths.length === 0 ||
+      get().exporting ||
+      get().batchExporting
+    ) {
+      return;
+    }
+    if (droppedPaths.length === 1) {
+      await get().openPath(droppedPaths[0]);
+    } else {
+      await get().exportBatchPdf(droppedPaths);
+    }
+  },
 
   openSelectedDocument: async () => {
     try {
@@ -141,6 +175,7 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
         fitScale: 1,
         fitMode: "page",
         exportResult: null,
+        batchExportResults: null,
         loading: false,
       });
     } catch (error) {
@@ -165,6 +200,9 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
         exporting: false,
         exportProgress: null,
         exportResult: null,
+        batchExporting: false,
+        batchExportProgress: null,
+        batchExportResults: null,
         error: null,
       });
     } catch (error) {
@@ -222,11 +260,15 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
   },
 
   exportPdf: async (path) => {
+    if (get().batchExporting) {
+      return;
+    }
     const generation = operationGeneration;
     set({
       exporting: true,
       exportProgress: { current: 0, total: get().document?.pageCount ?? 0 },
       exportResult: null,
+      batchExportResults: null,
       error: null,
     });
     try {
@@ -247,7 +289,40 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
     }
   },
 
+  exportBatchPdf: async (paths) => {
+    if (
+      paths.length === 0 ||
+      get().exporting ||
+      get().batchExporting
+    ) {
+      return;
+    }
+    set({
+      batchExporting: true,
+      batchExportProgress: { current: 0, total: paths.length, fileName: "" },
+      batchExportResults: null,
+      error: null,
+    });
+    try {
+      const batchExportResults = await exportBatchDocumentPdf(paths);
+      set({
+        batchExporting: false,
+        batchExportProgress: null,
+        batchExportResults,
+      });
+    } catch (error) {
+      set({
+        batchExporting: false,
+        batchExportProgress: null,
+        error: errorMessage(error),
+      });
+    }
+  },
+
   exportCurrentPdf: async () => {
+    if (get().batchExporting) {
+      return;
+    }
     const document = get().document;
     if (!document) {
       return;
@@ -267,7 +342,13 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
       set({ exportProgress });
     }
   },
+  setBatchExportProgress: (batchExportProgress) => {
+    if (get().batchExporting) {
+      set({ batchExportProgress });
+    }
+  },
   clearExportResult: () => set({ exportResult: null }),
+  clearBatchExportResults: () => set({ batchExportResults: null }),
   setError: (error) => set({ error: errorMessage(error) }),
   clearError: () => set({ error: null }),
 }));

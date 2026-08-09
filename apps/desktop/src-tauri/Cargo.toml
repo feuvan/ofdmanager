@@ -20,3 +20,4 @@ printpdf = { version = "0.12.5", default-features = false, features = ["jpeg"] }
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2.11.5", features = [] }
 tauri-plugin-dialog = "2.7.2"
+tauri-plugin-opener = "2.5.4"
