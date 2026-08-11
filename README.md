@@ -80,7 +80,7 @@ crates/
 apps/desktop/   基于 Tauri v2、React 和 TypeScript 的桌面查看器。
 fixtures/       OFD 示例文件及回归测试用参考页面图像。
 docs/           GB/T 33190 标准及相关资料。
-scripts/        辅助脚本，例如 fetch-fonts.sh。
+scripts/        辅助脚本，例如 fetch-fonts.sh 和 install-hooks.sh。
 ```
 
 核心库保持纯函数式边界：输入字节，输出模型或图像，不自行访问文件系统，
@@ -105,6 +105,16 @@ npm --prefix apps/desktop run lint
 npm --prefix apps/desktop run test
 npm --prefix apps/desktop run build
 ```
+
+## Git 提交检查
+
+启用项目共享的 pre-commit hook（每个 clone 执行一次）：
+
+```bash
+scripts/install-hooks.sh
+```
+
+Hook 会先检查暂存区空白问题；Rust 或桌面端文件发生变化时，分别执行与 CI 一致的格式化、Clippy、测试，以及前端 lint、测试和构建检查。
 
 ## 路线图
 

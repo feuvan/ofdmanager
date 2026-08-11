@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+# Keep docs-only commits fast while covering the Rust, fixture, and desktop code paths.
+staged_files="$(git diff --cached --name-only --diff-filter=ACDMRTUXB)"
+# Set OFD_PRECOMMIT_ALL=1 to run both suites outside a commit.
+run_all="${OFD_PRECOMMIT_ALL:-0}"
+
+if [[ "$run_all" != "1" && -z "$staged_files" ]]; then
+  exit 0
+fi
+
+rust_changed=false
+frontend_changed=false
+
+if [[ "$run_all" == "1" ]]; then
+  rust_changed=true
+  frontend_changed=true
+else
+  while IFS= read -r path; do
+    [[ -z "$path" ]] && continue
+    case "$path" in
+      Cargo.toml|Cargo.lock|rust-toolchain|rust-toolchain.toml|rustfmt.toml|.cargo/*|crates/*|fixtures/*|apps/desktop/src-tauri/*)
+        rust_changed=true
+        ;;
+      apps/desktop/*)
+        frontend_changed=true
+        ;;
+    esac
+  done <<< "$staged_files"
+fi
+
+printf '%s\n' "[pre-commit] checking staged whitespace"
+if ! git diff --cached --check; then
+  printf '%s\n' "[pre-commit] staged whitespace errors found" >&2
+  exit 1
+fi
+
+if [[ "$rust_changed" == true ]]; then
+  if ! command -v cargo >/dev/null 2>&1; then
+    printf '%s\n' "[pre-commit] cargo is required for Rust changes" >&2
+    exit 1
+  fi
+
+  printf '%s\n' "[pre-commit] cargo fmt"
+  cargo fmt --all -- --check
+
+  printf '%s\n' "[pre-commit] cargo clippy"
+  cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  printf '%s\n' "[pre-commit] cargo test"
+  cargo test --workspace --locked
+fi
+
+if [[ "$frontend_changed" == true ]]; then
+  if ! command -v npm >/dev/null 2>&1; then
+    printf '%s\n' "[pre-commit] npm is required for desktop changes" >&2
+    exit 1
+  fi
+  if [[ ! -d apps/desktop/node_modules ]]; then
+    printf '%s\n' "[pre-commit] apps/desktop/node_modules is missing; run 'npm ci --prefix apps/desktop'" >&2
+    exit 1
+  fi
+
+  printf '%s\n' "[pre-commit] npm run lint"
+  npm --prefix apps/desktop run lint
+
+  printf '%s\n' "[pre-commit] npm run test"
+  npm --prefix apps/desktop run test
+
+  printf '%s\n' "[pre-commit] npm run build"
+  npm --prefix apps/desktop run build
+fi
+
+printf '%s\n' "[pre-commit] checks passed"

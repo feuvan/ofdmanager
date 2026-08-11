@@ -82,7 +82,7 @@ crates/
   ofd-cli/      Command-line front-end: render, verify.
 fixtures/       Sample OFD files and reference page images for regression tests.
 docs/           The GB/T 33190 standard (the authoritative reference).
-scripts/        Helper scripts (e.g. fetch-fonts.sh).
+scripts/        Helper scripts (e.g. fetch-fonts.sh and install-hooks.sh).
 ```
 
 The core is intentionally pure (bytes in, image out, no filesystem or threads of
@@ -99,6 +99,16 @@ cargo test  --workspace
 The test suite includes a **golden-image regression**: every sample renders, and
 pages with a reference image are compared perceptually to catch layout, color, or
 font regressions.
+
+## Git commit checks
+
+Enable the shared pre-commit hook once per clone:
+
+```bash
+scripts/install-hooks.sh
+```
+
+The hook checks staged whitespace, then runs the CI-equivalent Rust checks for Rust changes and the desktop lint, test, and build checks for frontend changes.
 
 ## Roadmap
 
