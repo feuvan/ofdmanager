@@ -2986,23 +2986,65 @@ fn parse_color_component(s: &str) -> Option<f32> {
 ///
 /// GB/T 33190 §11.3 (表46, `TextCode`) requires that a **significant space in the
 /// text content be escaped** (`\` + four hex digits, e.g. `\0020`) — alongside any
-/// out-of-range code. So a literal, unescaped whitespace run is *not* glyph
-/// content; here it is XML formatting (some producers, e.g. Suwell, place the text
-/// on its own line, so the content arrives as `"\r\nHeaffixed…"`). Left in, a
-/// leading newline would consume a `DeltaX` advance and shift every
+/// out-of-range code — so that literal XML whitespace can be treated as
+/// formatting. Producers rely on a reader ignoring it: some (e.g. Suwell) place
+/// the text on its own line, so the content arrives as `"\r\nHeaffixed…"`; left
+/// in, a leading newline would consume a `DeltaX` advance and shift every
 /// `CGTransform/@CodePosition` by one.
 ///
+/// Real-world producers nonetheless emit **literal spaces as glyph slots**: the
+/// airline itinerary invoices write `杭州 萧山` with
+/// `DeltaX="2.9980 2.9980 1.4990 2.9980 2.9980"` — a 1.499 mm advance for that
+/// space — and the reference renderer draws it (the `invoice-like` and
+/// `draw-param-ref` fixture goldens depend on it). Positioning iterates glyph
+/// slots, so dropping that space collapses the last two glyphs onto each other
+/// and shifts the remainder of the run.
+///
+/// So only a whitespace run containing a **line break or tab** is formatting: a
+/// newline or tab cannot be a displayed glyph in a fixed-layout `TextCode`
+/// (glyphs are positioned explicitly; there is no line-break/tab semantics),
+/// so such a run was inserted by the XML serializer. A run of plain U+0020
+/// spaces is content — the producer's own `DeltaX`/`CGTransform` glyph slots are
+/// the authority on whether it counts — and is kept.
+///
 /// This runs *before* [`decode_text_code`], so an escaped space (`\0020`) is still
-/// the literal characters `\0020` at this point and is preserved. Unescaped XML
-/// whitespace is formatting, including indentation inserted inside a wrapped
-/// text node, and must not consume a glyph/delta slot.
+/// the literal characters `\0020` at this point and is preserved either way.
 fn clean_text_code(raw: &str) -> String {
-    // XML's formatting whitespace is exactly #x20, #x9, #xD, and #xA.
-    // Do not use `char::is_whitespace`: U+3000 and similar characters are
-    // printable glyphs and are not XML formatting whitespace.
-    raw.chars()
-        .filter(|ch| !matches!(ch, ' ' | '\t' | '\r' | '\n'))
-        .collect()
+    if !raw.chars().any(is_xml_formatting_whitespace) {
+        return raw.to_owned();
+    }
+    let mut out = String::with_capacity(raw.len());
+    let mut run_start: Option<usize> = None;
+    for (index, ch) in raw.char_indices() {
+        if is_xml_formatting_whitespace(ch) {
+            run_start.get_or_insert(index);
+            continue;
+        }
+        if let Some(start) = run_start.take() {
+            keep_whitespace_run(&raw[start..index], &mut out);
+        }
+        out.push(ch);
+    }
+    if let Some(start) = run_start {
+        keep_whitespace_run(&raw[start..], &mut out);
+    }
+    out
+}
+
+/// XML's formatting whitespace is exactly #x20, #x9, #xD, and #xA. Do not use
+/// `char::is_whitespace`: U+3000 and similar characters are printable glyphs and
+/// are not XML formatting whitespace.
+fn is_xml_formatting_whitespace(ch: char) -> bool {
+    matches!(ch, ' ' | '\t' | '\r' | '\n')
+}
+
+/// Append a maximal run of XML whitespace unless it is serializer formatting.
+/// A run containing a line break or tab is formatting and is dropped whole
+/// (indentation included); a run of plain spaces is glyph content and kept.
+fn keep_whitespace_run(run: &str, out: &mut String) {
+    if run.chars().all(|ch| ch == ' ') {
+        out.push_str(run);
+    }
 }
 
 /// Decode OFD TextCode backslash hex escapes (`\4E2D`) while leaving literal
@@ -3815,30 +3857,62 @@ mod tests {
 
     #[test]
     fn text_code_strips_formatting_newline() {
-        // A TextCode pretty-printed onto its own line: the CRLF must not become a
-        // glyph (which would shift DeltaX and CGTransform code positions).
+        // A TextCode pretty-printed onto its own line: the CRLF and indentation
+        // must not become glyphs (which would shift DeltaX and CGTransform code
+        // positions).
         let doc = frag(
             "<TextObject xmlns=\"http://www.ofdspec.org/2016\" Font=\"3\" Size=\"4\">\
-               <TextCode X=\"0\" Y=\"3\" DeltaX=\"4 4\">\r\nabc</TextCode>\
+               <TextCode X=\"0\" Y=\"3\" DeltaX=\"4 4\">\r\n  abc\r\n</TextCode>\
              </TextObject>",
         );
         let t = parse_text(doc.root_element());
-        assert_eq!(t.runs[0].text, "abc"); // not "\r\nabc"
-                                           // Significant spaces must use the standard's hex escape. Literal
-                                           // whitespace, including wrapped indentation, is formatting.
-        let doc2 = frag(
-            "<TextObject xmlns=\"http://www.ofdspec.org/2016\" Font=\"3\" Size=\"4\">\
-               <TextCode X=\"0\" Y=\"3\">a b\t\n c\\0020d</TextCode>\
-             </TextObject>",
-        );
-        assert_eq!(parse_text(doc2.root_element()).runs[0].text, "abc d");
+        assert_eq!(t.runs[0].text, "abc"); // not "\r\nabc\n"
 
-        let doc3 = frag(
+        // A line break inserted inside a wrapped text node is formatting too, so
+        // it does not consume a glyph/delta slot.
+        let doc = frag(
             "<TextObject xmlns=\"http://www.ofdspec.org/2016\" Font=\"3\" Size=\"4\">\
-               <TextCode X=\"0\" Y=\"3\">甲　乙</TextCode>\
+               <TextCode X=\"0\" Y=\"3\">甲公司\r\n      乙部门</TextCode>\
              </TextObject>",
         );
-        assert_eq!(parse_text(doc3.root_element()).runs[0].text, "甲　乙");
+        assert_eq!(parse_text(doc.root_element()).runs[0].text, "甲公司乙部门");
+    }
+
+    #[test]
+    fn text_code_keeps_literal_spaces_as_glyph_slots() {
+        // Airline itinerary invoices emit literal interior spaces that are real
+        // glyph slots: the producer gives the space its own 1.499 mm DeltaX
+        // advance and the reference renderer draws it. Dropping it would collapse
+        // the following glyph onto its predecessor.
+        let doc = frag(
+            "<TextObject xmlns=\"http://www.ofdspec.org/2016\" Font=\"3\" Size=\"4\">\
+               <TextCode X=\"0\" Y=\"5.27625\" DeltaX=\"2.9980 2.9980 1.4990 2.9980 2.9980\">杭州 萧山</TextCode>\
+             </TextObject>",
+        );
+        let t = parse_text(doc.root_element());
+        assert_eq!(t.runs[0].text, "杭州 萧山");
+        assert_eq!(t.runs[0].delta_x.len(), 5); // one advance per glyph slot
+
+        // Leading literal spaces are kept as well (draw-param-ref fixture relies
+        // on them to place the page numbers).
+        let doc = frag(
+            "<TextObject xmlns=\"http://www.ofdspec.org/2016\" Font=\"3\" Size=\"4\">\
+               <TextCode X=\"0\" Y=\"3\" DeltaX=\"g 15 1.5875\">  4            1</TextCode>\
+             </TextObject>",
+        );
+        assert_eq!(
+            parse_text(doc.root_element()).runs[0].text,
+            "  4            1"
+        );
+
+        // U+3000 is a printable glyph, and an escaped space (`\0020`) is always
+        // content — neither is XML formatting whitespace.
+        let doc = frag(
+            "<TextObject xmlns=\"http://www.ofdspec.org/2016\" Font=\"3\" Size=\"4\">\
+               <TextCode X=\"0\" Y=\"3\">甲　乙\\0020丙</TextCode>\
+             </TextObject>",
+        );
+        assert_eq!(parse_text(doc.root_element()).runs[0].text, "甲　乙 丙");
     }
 
     #[test]

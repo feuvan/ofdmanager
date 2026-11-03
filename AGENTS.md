@@ -1,6 +1,7 @@
 # Agent guide — OFD Manager
 
-Guidance for coding agents working in this repository. (`CLAUDE.md` is identical.)
+Guidance for coding agents working in this repository. (`CLAUDE.md` imports this
+file with `@AGENTS.md`; edit only this file and keep the import.)
 
 ## What this is
 
@@ -83,9 +84,14 @@ To eyeball a render: produce a PNG with `ofd-cli render … --dpi 300` and open 
   value; an empty list falls back to the font's glyph advance — but only
   horizontally and only when there's no `DeltaY` (vertical = `DeltaY`, X adv 0).
 - `TextCode` content: per §11.3 a **significant space must be hex-escaped**
-  (`\0020`), so literal unescaped whitespace (e.g. a pretty-print `\r\n`) is
-  formatting — strip it *before* unescaping, or it eats a `DeltaX` and shifts every
-  `CGTransform/@CodePosition`.
+  (`\0020`), so literal XML whitespace can be formatting. Strip it *before*
+  unescaping, or a pretty-print `\r\n` eats a `DeltaX` and shifts every
+  `CGTransform/@CodePosition`. Strip **only whitespace runs containing a line
+  break or tab** though: real producers (airline itinerary invoices) emit literal
+  interior spaces that are genuine glyph slots (`杭州 萧山`, with a 1.499 mm
+  `DeltaX` entry for the space), and the reference goldens (`invoice-like`,
+  `draw-param-ref`) depend on keeping them — blanket-stripping collapses glyphs
+  onto each other and shifts the rest of the run.
 - `CGTransform` (§11.4) is authoritative for the code span it covers: it maps
   `[CodePosition, +CodeCount)` to `GlyphCount` explicit glyph ids — handling
   many-to-one (ligatures), one-to-many, and many-to-many. The slot count must equal

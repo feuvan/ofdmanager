@@ -127,11 +127,14 @@ fn expected_warnings(stem: &str) -> &'static [&'static str] {
         ],
         "path-clip" => &[
             "XML entry \"OFD.xml\" has 12 element(s) in legacy OFD namespace \"http://www.ofdspec.org\"; first is <OFD>",
-            "TemplatePage Doc_0/TPLS/TPL_0/Content.xml: malformed document: CGTransform code span 0..53 exceeds 44 source codes",
+            // The run already counts the 9 literal spaces of the English title
+            // (CGTransform CodeCount=53 covers them), so no span warning.
             "unresolved image resource id 0",
         ],
         "signout" => &[
-            "Page Doc_0/Pages/Page_0/Content.xml: malformed document: CGTransform code span 0..1 exceeds 0 source codes",
+            // The one-space placeholder TextCodes are content (CGTransform
+            // CodeCount=1 covers the literal space), so they no longer produce a
+            // span warning.
             "XML entry \"Doc_0/Annots/Page_0/Annotation.xml\" has 1 unqualified element(s); first is <Remark>",
         ],
         "sample-1" => &[
@@ -142,10 +145,11 @@ fn expected_warnings(stem: &str) -> &'static [&'static str] {
         "v4-ride-right" => &[
             "PublicRes Doc_0/PublicRes.xml: unreadable: missing entry in OFD container: Doc_0/PublicRes.xml",
         ],
-        "zsbk" => &[
-            "TemplatePage Doc_0/TPLS/TPL_0/Content.xml: malformed document: CGTransform code span 0..1 exceeds 0 source codes",
-            "TemplatePage Doc_0/TPLS/TPL_1/Content.xml: malformed document: CGTransform code span 0..1 exceeds 0 source codes",
-        ],
+        // zsbk's one-space TextCodes are content too: CGTransform
+        // CodeCount=1/GlyphCount=1 covers the literal space, so the old
+        // "span exceeds 0 source codes" warnings were a whitespace-stripping
+        // artifact and are gone.
+        "zsbk" => &[],
         _ => &[],
     }
 }
