@@ -53,7 +53,9 @@ fn fallback_fonts() -> Vec<Arc<Vec<u8>>> {
 }
 
 fn non_white_pixels(rgba: &[u8]) -> usize {
-    rgba.chunks_exact(4)
+    rgba.as_chunks::<4>()
+        .0
+        .iter()
         .filter(|p| p[0] != 255 || p[1] != 255 || p[2] != 255)
         .count()
 }

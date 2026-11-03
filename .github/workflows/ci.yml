@@ -46,6 +46,84 @@ jobs:
       - name: Build
         run: npm run build
 
+  quicklook-macos:
+    name: Quick Look extensions (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Test ofd-quicklook
+        run: cargo test -p ofd-quicklook --locked
+
+      - name: Clippy ofd-quicklook
+        run: cargo clippy -p ofd-quicklook --all-targets --locked -- -D warnings
+
+      - name: Build and self-check the Quick Look appex bundles
+        run: scripts/build-quicklook.sh --check
+
+      - name: Validate the Tauri wiring and generated appex bundles
+        run: |
+          set -euo pipefail
+
+          # Tauri config files must be valid JSON and the host Info.plist a valid plist.
+          python3 -m json.tool apps/desktop/src-tauri/tauri.conf.json > /dev/null
+          python3 -m json.tool apps/desktop/src-tauri/tauri.macos.conf.json > /dev/null
+          plutil -lint apps/desktop/src-tauri/Info.plist
+
+          # UTI declarations that macOS Finder/Quick Look rely on.
+          test "$(plutil -extract UTExportedTypeDeclarations.0.UTTypeIdentifier raw -o - apps/desktop/src-tauri/Info.plist)" = "com.ofdmanager.ofd"
+          test "$(plutil -extract CFBundleDocumentTypes.0.LSItemContentTypes json -o - apps/desktop/src-tauri/Info.plist)" = '["public.ofd","com.ofdmanager.ofd"]'
+          test "$(plutil -extract UTExportedTypeDeclarations.0.UTTypeConformsTo json -o - apps/desktop/src-tauri/Info.plist)" = '["public.data","public.composite-content"]'
+
+          # The appex source paths in tauri.macos.conf.json resolve against the
+          # Tauri config directory (apps/desktop/src-tauri, like bundle.resources),
+          # so they must exist there after scripts/build-quicklook.sh has run.
+          python3 -c '
+          import json
+          import os
+          import sys
+          cfg = json.load(open("apps/desktop/src-tauri/tauri.macos.conf.json"))
+          files = cfg["bundle"]["macOS"]["files"]
+          for dest, src in files.items():
+              path = os.path.join("apps/desktop/src-tauri", src)
+              if not os.path.isdir(path):
+                  sys.exit(f"missing appex bundle source for {dest}: {path}")
+          print(f"OK: {len(files)} appex source bundles present under apps/desktop/src-tauri")
+          '
+
+          # Both appexes must be valid, sandboxed, ad-hoc-signed bundles.
+          for appex in OFDQuickLookPreview OFDQuickLookThumbnail; do
+            bundle="apps/desktop/src-tauri/gen/quicklook/${appex}.appex"
+            executable="${bundle}/Contents/MacOS/${appex}"
+            test -d "$bundle"
+            test -x "$executable"
+            plutil -lint "${bundle}/Contents/Info.plist"
+            codesign --verify --strict "$bundle"
+            entitlements="$(codesign -d --entitlements :- "$bundle" 2> /dev/null)"
+            echo "$entitlements" | grep -q "com.apple.security.app-sandbox"
+            echo "$entitlements" | grep -q "com.apple.security.files.user-selected.read-only"
+            extension_point="$(plutil -extract NSExtension.NSExtensionPointIdentifier raw -o - "${bundle}/Contents/Info.plist")"
+            case "$appex:$extension_point" in
+              OFDQuickLookPreview:com.apple.quicklook.preview) ;;
+              OFDQuickLookThumbnail:com.apple.quicklook.thumbnail) ;;
+              *) echo "unexpected extension point '$extension_point' for $appex" >&2; exit 1 ;;
+            esac
+            echo "OK: ${appex}.appex verified"
+          done
+
   rust:
     name: Rust workspace
     runs-on: ubuntu-22.04

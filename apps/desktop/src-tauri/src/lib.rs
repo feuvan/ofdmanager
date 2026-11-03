@@ -749,7 +749,7 @@ fn normalized_pdf_path(mut path: PathBuf) -> PathBuf {
 
 fn rgba_to_rgb(rgba: &[u8]) -> Vec<u8> {
     let mut rgb = Vec::with_capacity(rgba.len() / 4 * 3);
-    for pixel in rgba.chunks_exact(4) {
+    for pixel in rgba.as_chunks::<4>().0 {
         rgb.extend_from_slice(&pixel[..3]);
     }
     rgb

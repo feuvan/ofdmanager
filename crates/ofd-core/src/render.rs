@@ -3034,7 +3034,7 @@ fn premul_pixel(c: Color) -> tiny_skia::PremultipliedColorU8 {
 
 fn pixmap_into_straight_rgba(pixmap: Pixmap) -> Vec<u8> {
     let mut rgba = pixmap.take();
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0 {
         let alpha = u16::from(pixel[3]);
         if alpha == 0 {
             pixel[..3].fill(0);
@@ -3049,7 +3049,7 @@ fn pixmap_into_straight_rgba(pixmap: Pixmap) -> Vec<u8> {
 }
 
 fn straight_rgba_into_premultiplied(mut rgba: Vec<u8>) -> Vec<u8> {
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0 {
         let alpha = u16::from(pixel[3]);
         for channel in &mut pixel[..3] {
             *channel = ((u16::from(*channel) * alpha + 127) / 255) as u8;
@@ -4072,7 +4072,9 @@ mod tests {
 
     fn non_white(b: &Bitmap) -> usize {
         b.rgba
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|p| p[0] != 255 || p[1] != 255 || p[2] != 255)
             .count()
     }
@@ -5115,7 +5117,9 @@ mod tests {
         let non_white = |bitmap: &Bitmap| {
             bitmap
                 .rgba
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .filter(|pixel| pixel[..3] != [255, 255, 255])
                 .count()
         };
@@ -5659,12 +5663,16 @@ mod tests {
         .unwrap();
         let blackish = b
             .rgba
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|p| p[0] < 40 && p[1] < 40 && p[2] < 40)
             .count();
         let whiteish = b
             .rgba
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|p| p[0] > 220 && p[1] > 220 && p[2] > 220)
             .count();
         assert!(

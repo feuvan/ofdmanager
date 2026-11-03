@@ -47,6 +47,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # macOS builds: the Quick Look .appex bundles are produced by the
+          # beforeBundleCommand hook (scripts/build-quicklook.sh, wired in
+          # apps/desktop/src-tauri/tauri.macos.conf.json), which builds them for
+          # the target arch (TAURI_ENV_ARCH) and Tauri embeds them into
+          # Contents/PlugIns. No signing identity is configured here, so the
+          # extensions are ad-hoc signed (sandbox entitlements are applied by the
+          # script), which is enough for local PlugInKit registration.
           - platform: macos-latest
             target: aarch64-apple-darwin
             args: --bundles app,dmg --target aarch64-apple-darwin

@@ -123,7 +123,9 @@ fn text_shape_rasterizes_into_clip_mask() {
     .unwrap();
     let painted = bitmap
         .rgba
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|pixel| pixel[0] < 128)
         .count();
     assert!(painted > 5, "text outline should create a non-empty clip");

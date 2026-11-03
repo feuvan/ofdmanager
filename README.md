@@ -44,6 +44,9 @@
   为图像型 PDF。
 - **桌面查看器**：支持文件打开、缩略图、目录导航、缩放、元数据、签名
   校验、拖放和深色模式。
+- **Quick Look（macOS）**：在 Finder 中选中 `.ofd` 文件按空格即可原生预览，
+  并显示 Finder 缩略图；两个 Quick Look 扩展随桌面应用一起打包（扩展需要
+  macOS 12+）。
 
 当前已知缺口包括完整的签名真实性校验（SM2 和证书链）、CCITT/G4 图像，
 以及少量高级批注混合模式。
@@ -71,16 +74,46 @@ cargo run -p ofd-cli -- verify invoice.ofd
 scripts/fetch-fonts.sh
 ```
 
+## macOS Quick Look 预览
+
+桌面应用内置两个 macOS Quick Look 扩展（`.appex`），随 `.app` 一起分发：
+
+- **预览**（`OFDQuickLookPreview`）：在 Finder 中选中 `.ofd` 文件按空格，
+  直接查看原生渲染的多页预览（默认最多前 32 页、144 DPI）。
+- **缩略图**（`OFDQuickLookThumbnail`）：在 Finder 图标视图和快速查看列表中
+  显示首页缩略图。
+
+| 项目 | 说明 |
+| --- | --- |
+| 系统要求 | 扩展需要 macOS 12+；应用本体的平台要求不变 |
+| 支持的 UTI | `public.ofd`（macOS 27.2+ 系统声明）和 `com.ofdmanager.ofd`（应用导出，旧系统回退） |
+| 安装 | 把 `OFD Manager.app` 放到 `/Applications`（或其他被 LaunchServices 索引的位置）并至少启动一次，扩展才会注册 |
+| 验证 | Finder 中选中 `.ofd` 按空格；或 `qlmanage -p invoice.ofd`、`qlmanage -x -t -s 512 -o out invoice.ofd` |
+
+macOS 27.2 起系统自带 OFD Quick Look 扩展（`com.apple.OFDPreview`）。若系统扩展
+和应用扩展同时启用，由系统决定使用哪一个；可以在「系统设置 > 通用 > 登录项与
+扩展」中调整，也可以用 `pluginkit` 选择：
+
+```bash
+# 优先使用本应用的预览扩展；恢复系统扩展：pluginkit -e default -i com.apple.OFDPreview
+pluginkit -e use -i com.ofdmanager.desktop.quicklook.preview
+pluginkit -e ignore -i com.apple.OFDPreview
+```
+
+构建方式、验证步骤与架构说明见 [`docs/quicklook.md`](docs/quicklook.md)。
+
 ## 项目结构
 
 ```text
 crates/
-  ofd-core/     可移植的渲染核心（解析 → 模型 → 位图），不负责 I/O 或 UI。
-  ofd-cli/      命令行入口，支持 render 和 verify。
-apps/desktop/   基于 Tauri v2、React 和 TypeScript 的桌面查看器。
-fixtures/       OFD 示例文件及回归测试用参考页面图像。
-docs/           GB/T 33190 标准及相关资料。
-scripts/        辅助脚本，例如 fetch-fonts.sh 和 install-hooks.sh。
+  ofd-core/       可移植的渲染核心（解析 → 模型 → 位图），不负责 I/O 或 UI。
+  ofd-cli/        命令行入口，支持 render 和 verify。
+  ofd-quicklook/  macOS Quick Look 扩展使用的 C ABI 渲染静态库（复用 ofd-core）。
+apps/desktop/     基于 Tauri v2、React 和 TypeScript 的桌面查看器。
+  macos/quicklook/  macOS Quick Look 预览 / 缩略图扩展（Swift + .appex）。
+fixtures/         OFD 示例文件及回归测试用参考页面图像。
+docs/             GB/T 33190 标准及相关资料。
+scripts/          辅助脚本，例如 fetch-fonts.sh、build-quicklook.sh 和 install-hooks.sh。
 ```
 
 核心库保持纯函数式边界：输入字节，输出模型或图像，不自行访问文件系统，
@@ -104,6 +137,18 @@ npm --prefix apps/desktop install
 npm --prefix apps/desktop run lint
 npm --prefix apps/desktop run test
 npm --prefix apps/desktop run build
+```
+
+macOS Quick Look 扩展可以单独构建并自检（其他平台会跳过）：
+
+```bash
+scripts/build-quicklook.sh --check
+```
+
+完整打包应用时会自动构建扩展并嵌入 `Contents/PlugIns`：
+
+```bash
+cd apps/desktop && npx tauri build --bundles app
 ```
 
 ## Git 提交检查

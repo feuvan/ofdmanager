@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/ofd-core",
     "crates/ofd-cli",
+    "crates/ofd-quicklook",
     "apps/desktop/src-tauri",
 ]
 
